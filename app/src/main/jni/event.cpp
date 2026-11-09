@@ -98,6 +98,14 @@ void *event_thread(void *arg)
             mp_property = (mpv_event_property*)mp_event->data;
             sendPropertyUpdateToJava(env, mp_property);
             break;
+        case MPV_EVENT_END_FILE: {
+            const auto *end = static_cast<mpv_event_end_file*>(mp_event->data);
+            if (end && mpv_MPVLib_eventEndFile)
+                env->CallStaticVoidMethod(mpv_MPVLib, mpv_MPVLib_eventEndFile,
+                                          (jint)end->reason, (jint)end->error);
+            sendEventToJava(env, mp_event->event_id);
+            break;
+        }
         default:
             ALOGV("event: %s\n", mpv_event_name(mp_event->event_id));
             sendEventToJava(env, mp_event->event_id);

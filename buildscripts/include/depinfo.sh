@@ -19,13 +19,31 @@ v_libxml2=2.15.4
 v_fontconfig=2.18.3
 v_curl=8.23.0
 
+# The mpv fork includes the Android patches; keep the official base for exports.
+mpv_repository=https://github.com/AttemptD/mpv.git
+mpv_upstream_repository=https://github.com/mpv-player/mpv.git
+v_mpv_upstream=d9d402dc07d02c9aa178fb3e33adc390fa2785cc
+v_mpv=1db14e06c1192f7b635afb9d4c342ace552d7d93
+v_libplacebo=275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+v_libsmb2=libsmb2-6.2
+v_libbluray=1.3.4
+v_libdvdcss=1.4.3
+v_libdvdread=6.1.3
+v_libdvdnav=6.1.1
+
 
 ## Dependency tree
 
 dep_mbedtls=()
 dep_dav1d=()
 dep_libxml2=()
-dep_ffmpeg=(mbedtls dav1d libxml2)
+dep_libsmb2=()
+dep_libbluray=()
+dep_libdvdcss=()
+dep_libdvdread=(libdvdcss)
+dep_libdvdnav=(libdvdread)
+dep_ffmpeg=(mbedtls dav1d libxml2 libsmb2)
 dep_freetype2=()
 dep_fontconfig=(libxml2 freetype2)
 dep_fribidi=()
@@ -35,7 +53,7 @@ dep_libass=(freetype2 fontconfig fribidi harfbuzz unibreak)
 dep_lua=()
 dep_libplacebo=()
 dep_curl=(mbedtls)
-dep_mpv=(ffmpeg libass lua libplacebo curl)
+dep_mpv=(ffmpeg libass lua libplacebo curl libbluray libdvdnav)
 dep_mpv_android=(mpv)
 
 
@@ -45,4 +63,4 @@ dep_mpv_android=(mpv)
 v_ci_ffmpeg=n9.0.2
 
 # filename used to uniquely identify a build prefix
-ci_tarball="prefix-n${v_ndk}-l${v_lua}-u${v_unibreak}-h${v_harfbuzz}-fr${v_fribidi}-ft${v_freetype}-x${v_libxml2}-fo${v_fontconfig}-m${v_mbedtls}-c${v_curl}-ff${v_ci_ffmpeg}.tgz"
+ci_tarball="prefix-n${v_ndk}-l${v_lua}-u${v_unibreak}-h${v_harfbuzz}-fr${v_fribidi}-ft${v_freetype}-x${v_libxml2}-fo${v_fontconfig}-m${v_mbedtls}-c${v_curl}-smb${v_libsmb2}-bd${v_libbluray}-dvd${v_libdvdnav}-pl${v_libplacebo}-ff${v_ci_ffmpeg}.tgz"

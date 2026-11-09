@@ -18,6 +18,7 @@ unset CC CXX # meson wants these unset
 meson setup $build --cross-file "$prefix_dir"/crossfile.txt \
 	--default-library shared \
 	-Diconv=disabled -D{lua,libcurl}=enabled \
+	-Dlibbluray=enabled -Ddvdnav=enabled \
 	-Dlibmpv=true -Dcplayer=false \
 	-Dmanpage-build=disabled
 
@@ -27,4 +28,16 @@ if [ -f $build/libmpv.a ]; then
 	$0 clean
 	exec $0 build
 fi
+
+# dvdnav is static in the Android build. Letting its dvdread/dvdcss references
+# escape from libmpv.so produces a valid-looking file that Android rejects at
+# dlopen time, so fail the build before such a library can be packaged.
+unresolved_dvd_symbols=$(llvm-nm -u "$build/libmpv.so" | \
+	sed -n '/ U \(DVD\|dvdcss\)/p')
+if [ -n "$unresolved_dvd_symbols" ]; then
+	echo >&2 "Unresolved DVD symbols in libmpv.so:"
+	echo >&2 "$unresolved_dvd_symbols"
+	exit 1
+fi
+
 DESTDIR="$prefix_dir" ninja -C $build install

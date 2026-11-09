@@ -1,0 +1,31 @@
+diff --git a/player/command.c b/player/command.c
+--- a/player/command.c
++++ b/player/command.c
+@@ -34,6 +34,7 @@
+ #include <libavutil/avstring.h>
+ #include <libavutil/common.h>
+ #include <libavutil/timecode.h>
++#include <libplacebo/utils/libav.h>
+ 
+ #include "mpv_talloc.h"
+ #include "client.h"
+@@ -2089,6 +2090,9 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
+     }
+ 
+     bool has_crop = mp_rect_w(p.crop) > 0 && mp_rect_h(p.crop) > 0;
++    enum pl_color_transfer demux_transfer = p.color.transfer;
++    if (demux_transfer == PL_COLOR_TRC_UNKNOWN && p.lav_codecpar)
++        demux_transfer = pl_transfer_from_av(p.lav_codecpar->color_trc);
+     struct m_sub_property props[] = {
+         {"id",          SUB_PROP_INT(track->user_tid)},
+         {"type",        SUB_PROP_STR(stream_type_name(track->type)),
+@@ -2150,6 +2154,9 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
+         {"demux-bitrate",  SUB_PROP_INT(p.bitrate), .unavailable = p.bitrate <= 0},
+         {"demux-rotation", SUB_PROP_INT(p.rotate),  .unavailable = p.rotate <= 0},
+         {"demux-par",      SUB_PROP_DOUBLE(par),    .unavailable = par <= 0},
++        {"demux-gamma",    SUB_PROP_STR(m_opt_choice_str(pl_csp_trc_names,
++                                                        demux_transfer)),
++                           .unavailable = demux_transfer == PL_COLOR_TRC_UNKNOWN},
+         {"demux-duration", SUB_PROP_PTS(p.duration), .unavailable = p.duration <= 0},
+         {"format-name", SUB_PROP_STR(p.format_name), .unavailable = !p.format_name},
+         {"replaygain-track-peak", SUB_PROP_FLOAT(rg.track_peak),

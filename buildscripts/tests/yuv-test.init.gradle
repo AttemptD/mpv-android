@@ -1,0 +1,6 @@
+// Build a separate debug package; never replace an installed production mpv.
+gradle.beforeProject { p ->
+    p.plugins.withId('com.android.application') {
+        p.android.buildTypes.debug.applicationIdSuffix = '.yuvtest'
+    }
+}

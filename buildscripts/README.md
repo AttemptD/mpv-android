@@ -80,3 +80,21 @@ If you make any changes to libraries (ffmpeg, mpv, ...) or mpv-android native co
 ```
 
 then build the project from Android Studio.
+
+# Maintaining the Afuse forks
+
+The `codex/afuse` branches in [mpv-android](https://github.com/AttemptD/mpv-android/tree/codex/afuse)
+and [mpv](https://github.com/AttemptD/mpv/tree/codex/afuse) hold the local changes.
+Each local repository uses `origin` for the personal fork and `upstream` for the
+official repository. The `master` branches retain the official baseline.
+
+`include/depinfo.sh` records the exact mpv fork commit in `v_mpv`, its official
+base in `v_mpv_upstream`, and the source URLs. Dependency downloads and CI use
+the fork commit directly. The consolidated mpv patch is retained as an export;
+it is not applied a second time. libplacebo continues to use a pinned upstream
+revision plus its local patch.
+
+Merge `upstream/master` into `codex/afuse` in each repository to sync. After
+testing and pushing an updated mpv core, update the outer project's `v_mpv`
+pin and patch export, then commit and push the outer repository. See the
+[sync record](../docs/upstream-sync-20261109.txt) for commands and validation.

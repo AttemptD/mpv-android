@@ -1,0 +1,1176 @@
+diff --git a/common/msg.c b/common/msg.c
+--- a/common/msg.c
++++ b/common/msg.c
+@@ -462,11 +462,19 @@
+                     // buffer can't go away because the global log lock is held.
+                     mp_mutex_unlock(&buffer->lock);
+                     mp_mutex_lock(&root->log_file_lock);
+-                    if (root->log_file_thread_active) {
++                    // The file thread may have drained the buffer and sent
++                    // its wakeup before we acquired log_file_lock. Recheck
++                    // the predicate under the same lock as that wakeup;
++                    // otherwise both producer and consumer can sleep forever.
++                    // Match the consumer's lock order: file, then buffer.
++                    mp_mutex_lock(&buffer->lock);
++                    bool full = buffer->num_entries == buffer->capacity;
++                    mp_mutex_unlock(&buffer->lock);
++                    if (!root->log_file_thread_active) {
++                        dead = true;
++                    } else if (full) {
+                         mp_cond_wait(&root->log_file_wakeup,
+                                           &root->log_file_lock);
+-                    } else {
+-                        dead = true;
+                     }
+                     mp_mutex_unlock(&root->log_file_lock);
+                     mp_mutex_lock(&buffer->lock);
+
+diff --git a/demux/demux.c b/demux/demux.c
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -3939,6 +3939,10 @@
+ 
+     bool require_cache = flags & SEEK_CACHED;
+     flags &= ~(unsigned)SEEK_CACHED;
++    bool force_source = flags & SEEK_UNCACHED;
++    flags &= ~(unsigned)SEEK_UNCACHED;
++    if (force_source && require_cache)
++        return false;
+ 
+     bool set_backwards = flags & SEEK_SATAN;
+     flags &= ~(unsigned)SEEK_SATAN;
+@@ -3947,7 +3951,9 @@
+     flags &= ~(unsigned)SEEK_BLOCK;
+ 
+     struct demux_cached_range *cache_target =
+-        find_cache_seek_range(in, seek_pts, flags);
++        force_source ? NULL : find_cache_seek_range(in, seek_pts, flags);
++    if (force_source)
++        MP_VERBOSE(in, "P7 composition seek: bypassing partial packet cache\n");
+ 
+     if (!cache_target) {
+         if (require_cache) {
+@@ -4180,6 +4186,25 @@
+     mp_mutex_unlock(&in->lock);
+ }
+ 
++// A skipped Dolby enhancement stream may become necessary after a cached
++// seek. Normal video track switching suppresses this refresh after a seek,
++// but that stream has no cached packets: explicitly recover only its missing
++// packets using the existing overlap/deduplication mechanism.
++void demuxer_refresh_dependent_after_seek(struct demuxer *demuxer,
++                                         struct sh_stream *stream, double ref_pts)
++{
++    if (!stream || !stream->dependent_track || ref_pts == MP_NOPTS_VALUE)
++        return;
++    struct demux_internal *in = demuxer->in;
++    mp_mutex_lock(&in->lock);
++    if (in->after_seek && stream->ds->selected) {
++        MP_VERBOSE(in, "Recovering dependent stream after cached seek at %.6f\n", ref_pts);
++        initiate_refresh_seek(in, stream->ds, MP_ADD_PTS(ref_pts, -in->ts_offset));
++        mp_cond_signal(&in->wakeup);
++    }
++    mp_mutex_unlock(&in->lock);
++}
++
+ // This is for demuxer implementations only. demuxer_select_track() sets the
+ // logical state, while this function returns the actual state (in case the
+ // demuxer attempts to cache even unselected packets for track switching - this
+
+diff --git a/demux/demux.h b/demux/demux.h
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -99,6 +99,7 @@
+ #define SEEK_HR       (1 << 5)      // hr-seek (this is a weak hint only)
+ #define SEEK_BLOCK    (1 << 6)      // upon successfully queued seek, block readers
+                                     // (simplifies syncing multiple reader threads)
++#define SEEK_UNCACHED (1 << 7)      // re-read source, do not reuse a partial cache
+ 
+ // Strictness of the demuxer open format check.
+ // demux.c will try by default: NORMAL, UNSAFE (in this order)
+@@ -337,6 +338,8 @@
+                           double ref_pts, bool selected);
+ void demuxer_refresh_track(struct demuxer *demuxer, struct sh_stream *stream,
+                            double ref_pts);
++void demuxer_refresh_dependent_after_seek(struct demuxer *demuxer,
++                                         struct sh_stream *stream, double ref_pts);
+ 
+ int demuxer_help(struct mp_log *log, const m_option_t *opt, struct bstr name);
+ 
+
+diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
+--- a/filters/f_decoder_wrapper.c
++++ b/filters/f_decoder_wrapper.c
+@@ -21,6 +21,7 @@
+ #include <stdbool.h>
+ #include <math.h>
+ #include <assert.h>
++#include <stdatomic.h>
+ 
+ #include <libavutil/buffer.h>
+ #include <libavutil/common.h>
+@@ -163,10 +164,12 @@
+     struct m_config_cache *opt_cache;
+     struct dec_wrapper_opts *opts;
+     struct dec_queue_opts *queue_opts;
++    bool limit_p7_surface_queue;
+     struct mp_stream_info stream_info;
+ 
+     struct mp_codec_params *codec;
+     struct mp_decoder *decoder;
++    atomic_bool suspended;
+ 
+     // Demuxer output.
+     struct mp_pin *demux;
+@@ -545,6 +548,24 @@
+     mp_mutex_lock(&p->cache_lock);
+     p->extra_hw_frames = n;
+     mp_mutex_unlock(&p->cache_lock);
++}
++
++void mp_decoder_wrapper_set_suspended(struct mp_decoder_wrapper *d, bool suspended)
++{
++    struct priv *p = d->f->priv;
++    if (p->is_group) {
++        for (int i = 0; i < p->num_children; i++)
++            mp_decoder_wrapper_set_suspended(p->children[i], suspended);
++        return;
++    }
++    // Normal playback avoids dispatch locking. Only a suspension transition
++    // needs to synchronize with the optional decoder queue thread.
++    if (atomic_load(&p->suspended) == suspended)
++        return;
++    thread_lock(p);
++    atomic_store(&p->suspended, suspended);
++    mp_filter_wakeup(p->decf);
++    thread_unlock(p);
+ }
+ 
+ void mp_decoder_wrapper_set_frame_drops(struct mp_decoder_wrapper *d, int num)
+@@ -1172,6 +1193,13 @@
+         .max_samples = p->queue_opts->max_samples,
+         .max_duration = p->queue_opts->max_duration,
+     };
++    // Native MediaCodec frames retain their finite output buffers until the
++    // VO presents them. A 50-frame async queue plus BL/EL pairing can exhaust
++    // those buffers and prevent the decoder thread from servicing controls.
++    // Bound only the opted-in P7 pair; do not rewrite the user's queue option
++    // or alter ordinary/free playback's buffering behavior.
++    if (p->limit_p7_surface_queue)
++        cfg.max_samples = MPMIN(cfg.max_samples, 2);
+     mp_async_queue_set_config(p->queue, cfg);
+ }
+ 
+@@ -1183,6 +1211,9 @@
+     if (m_config_cache_update(p->opt_cache))
+         update_queue_config(p);
+ 
++    if (atomic_load(&p->suspended))
++        return;
++
+     feed_packet(p);
+     read_frame(p);
+ }
+@@ -1356,6 +1387,7 @@
+ 
+     struct priv *p = public_f->priv;
+     p->public.f = public_f;
++    atomic_init(&p->suspended, false);
+ 
+     mp_mutex_init(&p->cache_lock);
+     p->opt_cache = m_config_cache_alloc(p, public_f->global, &dec_wrapper_conf);
+@@ -1397,6 +1429,18 @@
+     }
+ 
+     if (p->queue_opts && p->queue_opts->use_queue) {
++#if HAVE_EGL_ANDROID
++        const struct mp_vo_opts *vo_opts =
++            mp_get_config_group(p, public_f->global, &vo_sub_opts);
++        struct sh_stream_group *group = src->group;
++        p->limit_p7_surface_queue = vo_opts->android_dovi_dual &&
++            src->type == STREAM_VIDEO && group && !group->lavfi_graph &&
++            group->num_members > 0 && group->members[0]->codec->dovi &&
++            group->members[0]->codec->dv_profile == 7;
++        if (p->limit_p7_surface_queue)
++            MP_VERBOSE(p, "P7 dual: capped async video queue at 2 Surface frames.\n");
++        talloc_free((void *)vo_opts);
++#endif
+         p->queue = mp_async_queue_create();
+         p->dec_dispatch = mp_dispatch_create(p);
+         p->dec_root_filter = mp_filter_create_root(public_f->global);
+
+diff --git a/filters/f_decoder_wrapper.h b/filters/f_decoder_wrapper.h
+--- a/filters/f_decoder_wrapper.h
++++ b/filters/f_decoder_wrapper.h
+@@ -47,6 +47,10 @@
+ // Video only.
+ void mp_decoder_wrapper_set_extra_hw_frames(struct mp_decoder_wrapper *d, int n);
+ 
++// Suspend packet feeding/output retrieval, preserving decoder state. Can be
++// changed by the player even when the optional decoder queue thread is enabled.
++void mp_decoder_wrapper_set_suspended(struct mp_decoder_wrapper *d, bool suspended);
++
+ // Legacy decoder framedrop control.
+ void mp_decoder_wrapper_set_frame_drops(struct mp_decoder_wrapper *d, int num);
+ int mp_decoder_wrapper_get_frames_dropped(struct mp_decoder_wrapper *d);
+
+diff --git a/filters/f_enhancement_pair.c b/filters/f_enhancement_pair.c
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -71,6 +71,7 @@
+ {
+     if (p->el_deselected) {
+         demuxer_select_track(p->demuxer, p->el_sh, pts, true);
++        demuxer_refresh_dependent_after_seek(p->demuxer, p->el_sh, pts);
+         p->el_deselected = false;
+     }
+ }
+@@ -283,7 +284,13 @@
+     p->el_eof = false;
+     p->mel_logged = false;
+     p->paired_frames = 0;
+-    restore_el_selection(p, MP_NOPTS_VALUE);
++    if (!p->mel_fast || p->el_dec) {
++        restore_el_selection(p, MP_NOPTS_VALUE);
++    } else if (p->el_deselected) {
++        // The next BL RPU is checked again; a new FEL/unknown RPU restores EL
++        // at that frame's timestamp. Merely seeking must not discard BL cache.
++        MP_DBG(f, "Preserving skipped MEL enhancement stream across reset.\n");
++    }
+ }
+ 
+ static void pair_destroy(struct mp_filter *f)
+@@ -293,7 +300,13 @@
+         pop_head(&p->bl_pending, &p->num_bl_pending);
+     while (p->num_el_pending)
+         pop_head(&p->el_pending, &p->num_el_pending);
+-    restore_el_selection(p, MP_NOPTS_VALUE);
++    if (!p->mel_fast || p->el_dec) {
++        restore_el_selection(p, MP_NOPTS_VALUE);
++    } else if (p->el_deselected) {
++        // Surface teardown must not trigger a demux refresh for unused EL.
++        // A new pair filter inherits the actual demux selection below.
++        MP_DBG(f, "Preserving skipped MEL enhancement stream across teardown.\n");
++    }
+     // el_dec->f is a child filter, freed by the framework after this returns.
+ }
+ 
+@@ -321,11 +334,15 @@
+     struct priv *p = f->priv;
+     p->el_sh = el_sh;
+     p->demuxer = demuxer;
++    p->el_deselected = demuxer && !demux_stream_is_selected(el_sh);
+     const struct mp_vo_opts *opts = mp_get_config_group(p, f->global, &vo_sub_opts);
+     p->mel_fast = demuxer && opts->android_dovi_mel_fast;
+-    if (!p->mel_fast && !create_el_decoder(f)) {
+-        talloc_free(f);
+-        return NULL;
++    if (!p->mel_fast) {
++        restore_el_selection(p, MP_NOPTS_VALUE);
++        if (!create_el_decoder(f)) {
++            talloc_free(f);
++            return NULL;
++        }
+     }
+ 
+     return f;
+
+diff --git a/player/command.c b/player/command.c
+--- a/player/command.c
++++ b/player/command.c
+@@ -5982,7 +5982,76 @@
+         mpctx->add_osd_seek_info |= OSD_SEEK_INFO_BAR;
+     if (cmd->seek_msg_osd)
+         mpctx->add_osd_seek_info |= OSD_SEEK_INFO_TEXT;
++}
++
++#if HAVE_EGL_ANDROID
++// Change EL composition, not hwdec. In particular, a software decoder selected
++// by mpv's own hardware fallback is left alone. A plain option change cannot
++// destroy an existing EL decoder or release Surface-backed frames safely.
++static void cmd_android_p7_set_dual(void *p)
++{
++    struct mp_cmd_ctx *cmd = p;
++    struct MPContext *mpctx = cmd->mpctx;
++    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
++    bool enable = cmd->args[0].v.i != 0;
++    cmd->result = (mpv_node){.format = MPV_FORMAT_FLAG, .u.flag = true};
++    struct sh_stream *el = track && track->stream
++                          ? sh_stream_dependent_sibling(track->stream) : NULL;
++    bool paused = mpctx->opts->pause;
++    // Use the paused playback position, not a decoded/queued frame that may
++    // differ from the position exposed to the client after audio/video sync.
++    double pts = paused ? get_current_time(mpctx) : mpctx->video_pts;
++    if (pts == MP_NOPTS_VALUE)
++        pts = get_current_time(mpctx);
++    if (!mpctx->playback_initialized || !mpctx->vo_chain || !el ||
++        !track->stream->codec || track->stream->codec->dv_profile != 7 ||
++        !mpctx->demuxer || track->demuxer != mpctx->demuxer ||
++        mpctx->vo_chain->track != track || !mpctx->demuxer->seekable ||
++        pts == MP_NOPTS_VALUE || !isfinite(pts) || mpctx->stop_play ||
++        mpctx->seek.type != MPSEEK_NONE || mpctx->hrseek_active) {
++        cmd->success = false;
++        return;
++    }
++    if (enable == mpctx->opts->vo->android_dovi_dual)
++        return;
++
++    // Keep the OLD dual flag during teardown: the VO's quiesce helper needs
++    // it to release imported BL/EL codec buffers before decoder destruction.
++    bool old = mpctx->opts->vo->android_dovi_dual;
++    demux_block_reading(mpctx->demuxer, true);
++    uninit_video_chain(mpctx);
++    if (mp_property_do("android-dovi-dual", M_PROPERTY_SET, &enable, mpctx) <= 0) {
++        mp_property_do("android-dovi-dual", M_PROPERTY_SET, &old, mpctx);
++        cmd->success = false;
++    }
++    // update_vo_chain_el_pair deselects EL in base mode. Select it explicitly
++    // when retrying full mode; a preceding base-only session deselected it.
++    if (mpctx->opts->vo->android_dovi_dual)
++        demuxer_select_track(track->demuxer, el, pts, true);
++    reinit_video_chain(mpctx);
++    if (!mpctx->vo_chain) {
++        // Do not report a successful quality fallback when normal decoder
++        // initialization failed. Leave mpv's usual track-error handling intact,
++        // restore the option and never strand the demux reader behind a latch.
++        mp_property_do("android-dovi-dual", M_PROPERTY_SET, &old, mpctx);
++        demux_block_reading(mpctx->demuxer, false);
++        cmd->success = false;
++        return;
++    }
++    // Seek only after the new chain exists. This also unblocks demux readers,
++    // preventing the freshly created decoder from consuming an old mid-GOP.
++    // All advanced VO flags are off in base mode. Keep this explicit command's
++    // opt-in on this track, not on global options or the device model. New
++    // files get new tracks; ordinary/free playback never sets this marker.
++    track->android_p7_managed = true;
++    queue_seek(mpctx, MPSEEK_ABSOLUTE, pts,
++               paused ? MPSEEK_VERY_EXACT : MPSEEK_EXACT,
++               enable ? MPSEEK_FLAG_NO_CACHE : 0);
++    mp_wakeup_core(mpctx);
++    MP_INFO(mpctx, "P7 composition: %s at %.6f (hwdec unchanged)\n",
++            mpctx->opts->vo->android_dovi_dual ? "full" : "base", pts);
+ }
++#endif
+ 
+ static void cmd_revert_seek(void *p)
+ {
+@@ -7463,6 +7532,10 @@
+ 
+ const struct mp_cmd_def mp_cmds[] = {
+     { "ignore", cmd_ignore, .is_ignore = true, .is_noisy = true, },
++#if HAVE_EGL_ANDROID
++    { "android-p7-set-dual", cmd_android_p7_set_dual,
++        { {"enable", OPT_INT(v.i), M_RANGE(0, 1)} } },
++#endif
+ 
+     { "seek", cmd_seek,
+         {
+@@ -8287,11 +8360,34 @@
+ 
+     if (flags & UPDATE_VO && mpctx->video_out) {
+         struct track *track = mpctx->current_track[0][STREAM_VIDEO];
++        // Removing the video chain switches the playback clock to buffered
++        // audio. Preserve the visible paused P7 position before that happens,
++        // instead of resolving a relative zero seek after decoder teardown.
++        bool android_p7 = mp_android_p7_active(mpctx);
++        double paused_pts = opts->pause && android_p7
++                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
++        double resume_pts = android_p7
++                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
++        bool hold_packets = track && mpctx->demuxer && mpctx->demuxer->seekable &&
++                            resume_pts != MP_NOPTS_VALUE;
++        if (hold_packets)
++            demux_block_reading(mpctx->demuxer, true);
+         uninit_video_out(mpctx);
+         handle_force_window(mpctx, true);
++        // A freshly recreated P7 decoder must not consume packets from the
++        // old middle-of-GOP reader position before the recovery seek runs.
++        // mp_seek unblocks readers only after resetting the decoder/filter.
+         reinit_video_chain(mpctx);
+-        if (track)
+-            queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
++        if (track) {
++            if (paused_pts != MP_NOPTS_VALUE) {
++                MP_DBG(mpctx, "Preserving paused P7 output position %.6f\n", paused_pts);
++                queue_seek(mpctx, MPSEEK_ABSOLUTE, paused_pts, MPSEEK_VERY_EXACT, 0);
++            } else if (hold_packets) {
++                queue_seek(mpctx, MPSEEK_ABSOLUTE, resume_pts, MPSEEK_EXACT, 0);
++            } else {
++                queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
++            }
++        }
+ 
+         mp_wakeup_core(mpctx);
+     }
+@@ -8323,6 +8419,11 @@
+         struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
+         if (dec) {
+             double last_pts = mpctx->video_pts;
++            if (last_pts == MP_NOPTS_VALUE && opts->vo->android_dovi_dual)
++                last_pts = get_current_time(mpctx);
++            if (opts->vo->android_dovi_dual && mpctx->demuxer &&
++                mpctx->demuxer->seekable && last_pts != MP_NOPTS_VALUE)
++                demux_block_reading(mpctx->demuxer, true);
+             if (vo_prepare_decoder_reset(mpctx->video_out)) {
+                 // Drop old frames still held by the player/filter chain too.
+                 // Otherwise they can reach the VO after codec reinitialization
+@@ -8353,10 +8454,17 @@
+ 
+     if (flags & UPDATE_VD && mpctx->vo_chain) {
+         struct track *track = mpctx->current_track[0][STREAM_VIDEO];
++        double paused_pts = opts->pause && opts->vo->android_dovi_dual
++                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
+         uninit_video_chain(mpctx);
+         reinit_video_chain(mpctx);
+-        if (track)
+-            queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
++        if (track) {
++            if (paused_pts != MP_NOPTS_VALUE) {
++                queue_seek(mpctx, MPSEEK_ABSOLUTE, paused_pts, MPSEEK_VERY_EXACT, 0);
++            } else {
++                queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
++            }
++        }
+     }
+ 
+     if (opt_ptr == &opts->vo->android_surface_size || opt_ptr == &opts->vo->d3d11_composition_size) {
+
+diff --git a/player/core.h b/player/core.h
+--- a/player/core.h
++++ b/player/core.h
+@@ -84,6 +84,7 @@
+ enum seek_flags {
+     MPSEEK_FLAG_DELAY = 1 << 0, // give player chance to coalesce multiple seeks
+     MPSEEK_FLAG_NOFLUSH = 1 << 1, // keeping remaining data for seamless loops
++    MPSEEK_FLAG_NO_CACHE = 1 << 2, // newly enabled dependent stream needs fresh packets
+ };
+ 
+ struct seek_params {
+@@ -102,6 +103,8 @@
+ };
+ 
+ struct track {
++    // File/track-local opt-in survives EL disable without changing free P7.
++    bool android_p7_managed;
+     enum stream_type type;
+ 
+     // Currently used for decoding.
+@@ -672,6 +675,7 @@
+ bool update_subtitles(struct MPContext *mpctx, double video_pts);
+ 
+ // video.c
++bool mp_android_p7_active(struct MPContext *mpctx);
+ void reset_video_state(struct MPContext *mpctx);
+ int init_video_decoder(struct MPContext *mpctx, struct track *track);
+ void reinit_video_chain(struct MPContext *mpctx);
+
+diff --git a/player/loadfile.c b/player/loadfile.c
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1602,8 +1602,22 @@
+     if (!mpctx->vo_chain || !mpctx->vo_chain->filter)
+         return;
+     struct track *track = mpctx->current_track[0][STREAM_VIDEO];
++    struct sh_stream *el = track
++                          ? sh_stream_dependent_sibling(track->stream) : NULL;
++#if HAVE_EGL_ANDROID
++    // Android dual-layer reconstruction is an explicit opt-in. A dependent
++    // stream discovered by the demuxer must not start a second decoder for
++    // ordinary/free playback, even if the renderer ignores its output.
++    if (!mpctx->opts->vo->android_dovi_dual && el) {
++        // Selecting BL automatically selects group-dependent streams too.
++        // Undo that for the unused EL so it cannot fill the demux cache.
++        demuxer_select_track(track->demuxer, el, MP_NOPTS_VALUE, false);
++        MP_VERBOSE(mpctx, "P7 dual disabled: enhancement stream not selected.\n");
++        el = NULL;
++    }
++#endif
+     mp_output_chain_set_el_stream(mpctx->vo_chain->filter,
+-        track ? sh_stream_dependent_sibling(track->stream) : NULL,
++        el,
+         track ? track->demuxer : NULL);
+ }
+ 
+
+diff --git a/player/playloop.c b/player/playloop.c
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -359,6 +359,17 @@
+         // The value is arbitrary, but should be "good enough" in most situations.
+         if (hr_seek_very_exact)
+             hr_seek_offset = MPMAX(hr_seek_offset, 0.5); // arbitrary
++        // Recreated BL and EL decoders have independent reference chains.
++        // A cue sufficient for BL can leave EL unable to produce the requested
++        // paused frame (observed 10.635 -> 11.136 with a 0.5s preroll). Start
++        // earlier on the opted-in dual path, then let the exact-seek/pairing
++        // code discard preroll. This changes neither the requested position
++        // nor ordinary/free/P5 seeks, and honors larger user-specified offsets.
++        struct track *video = mpctx->current_track[0][STREAM_VIDEO];
++        if (mp_android_p7_active(mpctx) && opts->vo->android_dovi_dual &&
++            video && video->stream &&
++            sh_stream_dependent_sibling(video->stream))
++            hr_seek_offset = MPMAX(hr_seek_offset, 2.0);
+         for (int n = 0; n < mpctx->num_tracks; n++) {
+             double offset = 0;
+             if (!mpctx->tracks[n]->is_external)
+@@ -377,8 +388,18 @@
+         demux_flags |= SEEK_CACHED;
+ 
+     demux_flags |= SEEK_BLOCK;
++    if (seek.flags & MPSEEK_FLAG_NO_CACHE)
++        demux_flags |= SEEK_UNCACHED;
++
++    // Stop one-shot Surface redraws before a cached seek repositions packets.
++    // In particular EOF looping can otherwise schedule the old last frame
++    // while the decoder is about to flush, before reset_playback_state below.
++    vo_prepare_decoder_reset(mpctx->video_out);
+ 
+     if (!demux_seek(mpctx->demuxer, demux_pts, demux_flags)) {
++        // A decoder reconfiguration may have held packet readers pending
++        // this seek. Failure must not leave the previous playback blocked.
++        demux_block_reading(mpctx->demuxer, false);
+         if (!mpctx->demuxer->seekable) {
+             MP_ERR(mpctx, "Cannot seek in this stream.\n");
+             MP_ERR(mpctx, "You can force it with '--force-seekable=yes'.\n");
+
+diff --git a/player/video.c b/player/video.c
+--- a/player/video.c
++++ b/player/video.c
+@@ -20,6 +20,7 @@
+ #include <inttypes.h>
+ #include <math.h>
+ #include <assert.h>
++#include <string.h>
+ 
+ #include "mpv_talloc.h"
+ 
+@@ -163,6 +164,11 @@
+ void uninit_video_chain(struct MPContext *mpctx)
+ {
+     if (mpctx->vo_chain) {
++        // Surface-backed BL/EL buffers are invalidated when their decoders
++        // are destroyed. Quiesce the VO queue on its own thread first, just
++        // as seek and decoder-mode changes do. The helper is restricted to
++        // the Android Dolby Vision path; other outputs keep their lifecycle.
++        vo_prepare_decoder_uninit(mpctx->video_out);
+         reset_video_state(mpctx);
+         vo_chain_uninit(mpctx->vo_chain);
+         mpctx->vo_chain = NULL;
+@@ -173,6 +179,21 @@
+     }
+ }
+ 
++bool mp_android_p7_active(struct MPContext *mpctx)
++{
++#if HAVE_EGL_ANDROID
++    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
++    // Manual/performance base mode disables EL but remains opted into the
++    // experimental P7 policy. It needs the same decoder lifecycle protection.
++    return track && (mpctx->opts->vo->android_dovi_dual ||
++                     track->android_p7_managed) &&
++           track->stream && track->stream->codec &&
++           track->stream->codec->dovi && track->stream->codec->dv_profile == 7;
++#else
++    return false;
++#endif
++}
++
+ int init_video_decoder(struct MPContext *mpctx, struct track *track)
+ {
+     mp_assert(!track->dec);
+@@ -193,7 +214,18 @@
+     if (!track->dec)
+         goto err_out;
+ 
+-    if (sh_stream_dependent_sibling(track->stream))
++#if HAVE_EGL_ANDROID
++    bool invisible_paused = mpctx->opts->pause &&
++        mp_android_p7_active(mpctx) && mpctx->video_out &&
++        strcmp(mpctx->video_out->driver->name, "null") == 0;
++    mp_decoder_wrapper_set_suspended(track->dec, invisible_paused);
++#endif
++
++    bool pair_el = sh_stream_dependent_sibling(track->stream) != NULL;
++#if HAVE_EGL_ANDROID
++    pair_el = pair_el && mpctx->opts->vo->android_dovi_dual;
++#endif
++    if (pair_el)
+         mp_decoder_wrapper_set_extra_hw_frames(track->dec, MP_ENHANCEMENT_PAIR_QUEUE_MAX);
+ 
+     if (!mp_decoder_wrapper_reinit(track->dec))
+@@ -1046,6 +1078,21 @@
+     struct track *track = mpctx->vo_chain->track;
+     struct vo_chain *vo_c = mpctx->vo_chain;
+     struct vo *vo = vo_c->vo;
++
++#if HAVE_EGL_ANDROID
++    // Android removes the window with --vo=null while the app is paused.
++    // A recovery seek puts video back in STATUS_SYNCING, which normally
++    // decodes a paused preview even without a visible window. On the opted-in
++    // P7 path that unnecessarily starts a software/copy BL and EL decode.
++    // Wait for the real VO instead; its rebuild queues the exact recovery
++    // seek. Unpaused null output (including background audio) stays supported.
++    bool invisible_paused = opts->pause && mp_android_p7_active(mpctx) &&
++                            strcmp(vo->driver->name, "null") == 0;
++    if (track && track->dec)
++        mp_decoder_wrapper_set_suspended(track->dec, invisible_paused);
++    if (invisible_paused)
++        return;
++#endif
+ 
+     if (vo_c->filter->reconfig_happened) {
+         mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
+
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -1237,7 +1237,7 @@
+ 
+     prepare_decoding(vd);
+ 
+-    // EOF may leave externally-backed P7 frames in the pairing/render queues.
++    // EOF may leave externally-backed MediaCodec frames in the render queues.
+     // A MediaCodec flush invalidates those buffers. Reset only when playback
+     // actually supplies a new packet (an explicit seek also resets normally).
+     if (pkt && ctx->surface_eof_pending_reset)
+@@ -1308,13 +1308,15 @@
+             // This must take the delay queue into account, so avctx returns EOF
+             // until the delay queue has been drained.
+             if (!ctx->num_delay_queue) {
+-                bool independent_surface =
+-                    ctx->hwdec.pix_fmt == AV_PIX_FMT_MEDIACODEC &&
+-                    ctx->hwdec_dev &&
+-                    ((AVHWDeviceContext *)ctx->hwdec_dev->data)->user_opaque;
+-                if (independent_surface) {
++                // Shared-reader P5 and ordinary HW+ have the same one-shot
++                // output buffers as independently backed P7 BL/EL. Flushing
++                // at decoder EOF invalidates their not-yet-presented tail
++                // frames too, before the player reaches its own video EOF.
++                bool queued_surface = ctx->use_hwdec && !ctx->hwdec.copying &&
++                    ctx->hwdec.pix_fmt == AV_PIX_FMT_MEDIACODEC;
++                if (queued_surface) {
+                     if (!ctx->surface_eof_pending_reset)
+-                        MP_VERBOSE(vd, "P7 Surface EOF: retaining queued output "
++                        MP_VERBOSE(vd, "MediaCodec Surface EOF: retaining queued output "
+                                        "buffers until a seek or new packet.\n");
+                     ctx->surface_eof_pending_reset = true;
+                 } else {
+@@ -1341,6 +1343,19 @@
+     if (ctx->pic->format == AV_PIX_FMT_MEDIACODEC && !ctx->pic->hw_frames_ctx &&
+         ctx->hwdec_dev &&
+         ((AVHWDeviceContext *)ctx->hwdec_dev->data)->user_opaque) {
++        // MediaCodec may omit chroma location on Surface frames. Preserve any
++        // explicit decoder/container value before applying P7's BL/EL VUI
++        // default (top-left, Dolby Profiles and Levels CCID 6). This is only
++        // the opted-in independent P7 Surface path, not ordinary HDR or P5.
++        if (ctx->codec->dovi && ctx->codec->dv_profile == 7 &&
++            ctx->pic->chroma_location == AVCHROMA_LOC_UNSPECIFIED) {
++            ctx->pic->chroma_location = avctx->chroma_sample_location;
++            // If the container has an explicit location, the decoder wrapper
++            // will merge it into the unspecified frame in its normal order.
++            if (ctx->pic->chroma_location == AVCHROMA_LOC_UNSPECIFIED &&
++                ctx->codec->chroma_location == PL_CHROMA_UNKNOWN)
++                ctx->pic->chroma_location = AVCHROMA_LOC_TOPLEFT;
++        }
+         if (!ctx->cached_hw_frames_ctx) {
+             ctx->cached_hw_frames_ctx = av_hwframe_ctx_alloc(ctx->hwdec_dev);
+             if (!ctx->cached_hw_frames_ctx) {
+
+diff --git a/video/out/hwdec/android_yuv_shaders.h b/video/out/hwdec/android_yuv_shaders.h
+--- a/video/out/hwdec/android_yuv_shaders.h
++++ b/video/out/hwdec/android_yuv_shaders.h
+@@ -16,12 +16,15 @@
+     "#extension GL_EXT_YUV_target : require\n"
+     "precision highp float;\n"
+     "uniform highp __samplerExternal2DY2YEXT source;\n"
++    "uniform highp float source_max;\n"
+     "in vec2 uv;\n"
+     "layout(location = 0) out float plane_y;\n"
+     "layout(location = 1) out float plane_u;\n"
+     "layout(location = 2) out float plane_v;\n"
+     "void main() {\n"
+     "  vec3 yuv = texture(source, uv).xyz;\n"
++    "  if (source_max > 0.0)\n"
++    "    yuv = floor(yuv * source_max + 0.5) / 65535.0;\n"
+     "  plane_y = yuv.x;\n"
+     "  plane_u = yuv.y;\n"
+     "  plane_v = yuv.z;\n"
+
+diff --git a/video/out/hwdec/hwdec_aimagereader.c b/video/out/hwdec/hwdec_aimagereader.c
+--- a/video/out/hwdec/hwdec_aimagereader.c
++++ b/video/out/hwdec/hwdec_aimagereader.c
+@@ -20,6 +20,7 @@
+ #include <assert.h>
+ #include <dlfcn.h>
+ #include <EGL/egl.h>
++#include <EGL/eglext.h>
+ #include <media/NdkImageReader.h>
+ #include <android/native_window_jni.h>
+ #include <libavcodec/mediacodec.h>
+@@ -36,8 +37,6 @@
+ #include "android_yuv_shaders.h"
+ 
+ typedef void *GLeglImageOES;
+-typedef void *EGLImageKHR;
+-#define EGL_NATIVE_BUFFER_ANDROID 0x3140
+ #ifndef GL_TEXTURE_BINDING_EXTERNAL_OES
+ #define GL_TEXTURE_BINDING_EXTERNAL_OES 0x8D67
+ #endif
+@@ -58,6 +57,7 @@
+     void (*AImageReader_delete)(AImageReader *);
+     media_status_t (*AImage_getHardwareBuffer)(const AImage *, AHardwareBuffer **);
+     void (*AImage_delete)(AImage *);
++    void (*AImage_deleteAsync)(AImage *, int);
+     void (*AHardwareBuffer_describe)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
+     jobject (*ANativeWindow_toSurface)(JNIEnv *, ANativeWindow *);
+ };
+@@ -76,7 +76,10 @@
+     bool image_available;
+ 
+     bool dovi_yuv;
++    bool native_yuv420;
+     bool yuv_logged;
++    bool image_gpu_used;
++    bool release_sync_logged;
+     struct mp_image *cached_source;
+     GLuint yuv_program, yuv_fbo, yuv_vao;
+     void (GLAPIENTRY *DrawBuffers)(GLsizei, const GLenum *);
+@@ -89,6 +92,9 @@
+     EGLClientBuffer (EGLAPIENTRY *GetNativeClientBufferANDROID)(
+         const struct AHardwareBuffer *);
+     void (EGLAPIENTRY *EGLImageTargetTexture2DOES)(GLenum, GLeglImageOES);
++    EGLSyncKHR (EGLAPIENTRY *CreateSyncKHR)(EGLDisplay, EGLenum, const EGLint *);
++    EGLBoolean (EGLAPIENTRY *DestroySyncKHR)(EGLDisplay, EGLSyncKHR);
++    EGLint (EGLAPIENTRY *DupNativeFenceFDANDROID)(EGLDisplay, EGLSyncKHR);
+ };
+ 
+ static const struct { const char *symbol; int offset; } lib_functions[] = {
+@@ -138,6 +144,11 @@
+ 
+         *(void **) ((uint8_t*)p + lib_functions[i].offset) = fun;
+     }
++    // Optional: older/vendor runtimes can keep working using a completed GL
++    // copy before release. Do not change ordinary MediaCodec device selection.
++    p->AImage_deleteAsync = (void *)dlsym(p->lib_handle, "AImage_deleteAsync");
++    if (!p->AImage_deleteAsync)
++        p->AImage_deleteAsync = (void *)dlsym(RTLD_DEFAULT, "AImage_deleteAsync");
+     return true;
+ }
+ 
+@@ -340,12 +351,31 @@
+ static const struct ra_format *yuv_bridge_format(struct ra_hwdec_mapper *mapper,
+                                                 const struct mp_image_params *src)
+ {
++    struct priv *p = mapper->priv;
++    if (p->native_yuv420) {
++        // Integer source codes are stored as code/65535, exactly as software
++        // yuv420p10 upload. UNORM16 is lossless here, unlike FLOAT16 or
++        // storing code/1023 in UNORM16. Keep FEL composition itself float32.
++        const struct ra_format *norm = ra_find_named_format(mapper->ra, "r16");
++        if (norm && norm->renderable && norm->linear_filter)
++            return norm;
++        return ra_find_named_format(mapper->ra, "r32f");
++    }
+     // Half floats round the EL neutral code away from nlq_offset. That makes
+     // sign(0) nonzero and can invent a half-LSB residual. Keep FEL input in
+     // full float precision, while known zero-residual MEL keeps the old format.
+     bool full = mapper->owner->ra_ctx->vo->opts->android_dovi_dual &&
+         (src->repr.sys != PL_COLOR_SYSTEM_DOLBYVISION || !src->repr.dovi ||
+          src->repr.dovi->nlq_active);
++    // Color A/B candidate: normalized MEL input does not require a floating
++    // point range. UNORM16 preserves more fractional bits than FLOAT16 while
++    // retaining the same memory footprint. FEL and unknown input stay R32F.
++    if (mapper->owner->ra_ctx->vo->opts->android_dovi_dual && !full) {
++        const struct ra_format *norm = ra_find_named_format(mapper->ra, "r16");
++        if (norm && norm->renderable && norm->linear_filter)
++            return norm;
++        return ra_find_named_format(mapper->ra, "r32f");
++    }
+     return full ? ra_find_named_format(mapper->ra, "r32f")
+                 : ra_find_float16_format(mapper->ra, 1);
+ }
+@@ -369,8 +399,8 @@
+     if (!p->DrawBuffers || !p->BindSampler || !p->ColorMask ||
+         buffers < 3 || attachments < 3 || !fmt || !fmt->renderable ||
+         !fmt->linear_filter) {
+-        MP_ERR(mapper, "Android YUV bridge needs three renderable float targets "
+-                       "(R32F required for FEL).\n");
++        MP_ERR(mapper, "Android YUV bridge needs three renderable targets "
++                       "with sufficient source precision.\n");
+         return false;
+     }
+ 
+@@ -397,14 +427,27 @@
+     }
+     gl->GenFramebuffers(1, &p->yuv_fbo);
+     gl->GenVertexArrays(1, &p->yuv_vao);
+-    mapper->dst_params.imgfmt = IMGFMT_444PF;
++    mapper->dst_params.imgfmt = p->native_yuv420 ? IMGFMT_420PF : IMGFMT_444PF;
+     // The sampler returns normalized source codes, not P010's left-aligned
+     // storage representation. Preserve the source precision without bit shifts.
+     mapper->dst_params.repr.bits.sample_depth =
+         mapper->dst_params.repr.bits.color_depth;
+     mapper->dst_params.repr.bits.bit_shift = 0;
++    if (p->native_yuv420) {
++        // Use the same logical UNORM16 sample encoding as a software 10-bit
++        // plane (code / 65535), in lossless UNORM16 or float32 storage. This
++        // avoids making RPU offset conversion depend on the decoder's storage
++        // format. No source bits are discarded or CPU copies introduced.
++        struct mp_imgfmt_desc src = mp_imgfmt_get_desc(mapper->src_params.hw_subfmt);
++        mapper->dst_params.repr.bits.sample_depth = 16;
++        mapper->dst_params.repr.bits.color_depth =
++            src.comps[0].size - abs(src.comps[0].pad);
++    }
+     MP_INFO(mapper, "Experimental HW+ Dolby Vision YUV bridge initialized "
+                     "(OES -> three %s planes, no CPU readback).\n", fmt->name);
++    if (p->native_yuv420)
++        MP_INFO(mapper, "Native 4:2:0 source codes: %d effective bits in 16-bit encoding.\n",
++                mapper->dst_params.repr.bits.color_depth);
+     return true;
+ }
+ 
+@@ -416,13 +459,15 @@
+     if (!fmt || !fmt->renderable || !fmt->linear_filter)
+         return false;
+     for (int i = 0; i < 3; i++) {
++        int pw = p->native_yuv420 && i ? (w + 1) / 2 : w;
++        int ph = p->native_yuv420 && i ? (h + 1) / 2 : h;
+         struct ra_tex *tex = mapper->tex[i];
+-        if (tex && (tex->params.w != w || tex->params.h != h ||
++        if (tex && (tex->params.w != pw || tex->params.h != ph ||
+                     tex->params.format != fmt))
+             ra_tex_free(mapper->ra, &mapper->tex[i]);
+         if (!mapper->tex[i]) {
+             mapper->tex[i] = ra_tex_create(mapper->ra, &(struct ra_tex_params) {
+-                .dimensions = 2, .w = w, .h = h, .d = 1, .format = fmt,
++                .dimensions = 2, .w = pw, .h = ph, .d = 1, .format = fmt,
+                 .render_src = true, .render_dst = true, .src_linear = true,
+             });
+             if (!mapper->tex[i])
+@@ -450,25 +495,40 @@
+     }
+     p->ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+     gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, p->yuv_fbo);
+-    const GLenum attachments[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1,
+-                                   GL_COLOR_ATTACHMENT2};
+-    for (int i = 0; i < 3; i++) {
+-        GLuint texture;
+-        GLenum target;
+-        ra_gl_get_raw_tex(mapper->ra, mapper->tex[i], &texture, &target);
+-        gl->FramebufferTexture2D(GL_DRAW_FRAMEBUFFER, attachments[i], target, texture, 0);
+-    }
+-    p->DrawBuffers(3, attachments);
+-    bool ok = gl->CheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+-    if (ok) {
+-        gl->Viewport(0, 0, w, h);
+-        gl->UseProgram(p->yuv_program);
+-        gl->Uniform1i(gl->GetUniformLocation(p->yuv_program, "source"), 0);
+-        gl->BindVertexArray(p->yuv_vao);
+-        p->BindSampler(0, 0);
+-        gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, p->gl_texture);
++    gl->UseProgram(p->yuv_program);
++    gl->Uniform1i(gl->GetUniformLocation(p->yuv_program, "source"), 0);
++    gl->Uniform1f(gl->GetUniformLocation(p->yuv_program, "source_max"),
++        p->native_yuv420 ? (1 << mapper->dst_params.repr.bits.color_depth) - 1 : 0);
++    gl->BindVertexArray(p->yuv_vao);
++    p->BindSampler(0, 0);
++    gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, p->gl_texture);
++    bool ok = true;
++    // Preserve the native chroma grid. Asking the external sampler for a
++    // linearly filtered 4:4:4 image irreversibly interpolates and rounds UV
++    // before libplacebo can apply the sign-sensitive FEL residual mapping.
++    // Copy Y and UV separately without filtering; let libplacebo reconstruct
++    // chroma once, using the same grid and siting as its software path.
++    for (int pass = 0; pass < (p->native_yuv420 ? 2 : 1); pass++) {
++        GLenum attachments[3];
++        for (int i = 0; i < 3; i++) {
++            bool use = !p->native_yuv420 || (pass == 0 ? i == 0 : i != 0);
++            GLuint texture = 0;
++            GLenum target = GL_TEXTURE_2D;
++            if (use)
++                ra_gl_get_raw_tex(mapper->ra, mapper->tex[i], &texture, &target);
++            gl->FramebufferTexture2D(GL_DRAW_FRAMEBUFFER,
++                GL_COLOR_ATTACHMENT0 + i, target, texture, 0);
++            attachments[i] = use ? GL_COLOR_ATTACHMENT0 + i : GL_NONE;
++        }
++        p->DrawBuffers(3, attachments);
++        ok = gl->CheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
++        if (!ok)
++            break;
++        gl->Viewport(0, 0, pass ? (w + 1) / 2 : w, pass ? (h + 1) / 2 : h);
+         gl->DrawArrays(GL_TRIANGLES, 0, 3);
+         ok = gl->GetError() == GL_NO_ERROR;
++        if (!ok)
++            break;
+     }
+     gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, oes);
+     p->BindSampler(0, sampler);
+@@ -485,7 +545,8 @@
+     if (!ok)
+         MP_ERR(mapper, "Android YUV bridge framebuffer/draw failed.\n");
+     else if (!p->yuv_logged) {
+-        MP_INFO(mapper, "HW+ Dolby Vision raw YUV sampling active: %dx%d.\n", w, h);
++        MP_INFO(mapper, "HW+ Dolby Vision raw YUV sampling active: %dx%d (%s).\n",
++                w, h, p->native_yuv420 ? "native 4:2:0" : "4:4:4");
+         p->yuv_logged = true;
+     }
+     return ok;
+@@ -519,14 +580,26 @@
+         (mapper->owner->ra_ctx->vo->opts->android_dovi_yuv &&
+          mapper->src_params.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION &&
+          mapper->src_params.repr.dovi);
++    if (p->dovi_yuv && gl_check_extension(
++            eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS),
++            "EGL_ANDROID_native_fence_sync")) {
++        p->CreateSyncKHR = (void *)eglGetProcAddress("eglCreateSyncKHR");
++        p->DestroySyncKHR = (void *)eglGetProcAddress("eglDestroySyncKHR");
++        p->DupNativeFenceFDANDROID =
++            (void *)eglGetProcAddress("eglDupNativeFenceFDANDROID");
++    }
++    struct mp_imgfmt_desc hwfmt = mp_imgfmt_get_desc(mapper->src_params.hw_subfmt);
++    p->native_yuv420 = mapper->owner->ra_ctx->vo->opts->android_dovi_dual &&
++                      hwfmt.chroma_xs == 1 && hwfmt.chroma_ys == 1;
+     if (p->dovi_yuv && !init_yuv_bridge(mapper))
+         return -1;
+ 
+     // texture creation
+     gl->GenTextures(1, &p->gl_texture);
+     gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, p->gl_texture);
+-    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+-    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    bool raw_nearest = p->native_yuv420;
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, raw_nearest ? GL_NEAREST : GL_LINEAR);
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, raw_nearest ? GL_NEAREST : GL_LINEAR);
+     gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+     gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+     gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+@@ -559,15 +632,50 @@
+ {
+     struct priv *p = mapper->priv;
+     struct priv_owner *o = p->reader_owner;
++    int release_fd = EGL_NO_NATIVE_FENCE_FD_ANDROID;
++
++    // DrawArrays only submits the OES -> private-plane copy. AImage_delete
++    // without a release fence lets the decoder overwrite that input while
++    // the GPU still reads it, producing spatially torn/shifted blocks. This
++    // synchronization is limited to the explicit Dolby YUV bridge; ordinary
++    // retained-OES playback is unchanged.
++    if (p->image && p->image_gpu_used) {
++        GL *gl = ra_gl_get(mapper->ra);
++        if (o->AImage_deleteAsync && p->CreateSyncKHR && p->DestroySyncKHR &&
++            p->DupNativeFenceFDANDROID) {
++            EGLDisplay display = eglGetCurrentDisplay();
++            const EGLint attrs[] = {EGL_NONE};
++            EGLSyncKHR sync = p->CreateSyncKHR(display,
++                EGL_SYNC_NATIVE_FENCE_ANDROID, attrs);
++            if (sync != EGL_NO_SYNC_KHR) {
++                // EGL_ANDROID_native_fence_sync creates the native fence on
++                // Flush. The returned duplicate is owned by deleteAsync.
++                gl->Flush();
++                release_fd = p->DupNativeFenceFDANDROID(display, sync);
++                p->DestroySyncKHR(display, sync);
++            }
++        }
++        if (release_fd == EGL_NO_NATIVE_FENCE_FD_ANDROID)
++            gl->Finish(); // Safe fallback, never release an unfinished copy.
++        if (!p->release_sync_logged) {
++            MP_INFO(mapper, "Dolby YUV buffer release synchronized using %s.\n",
++                release_fd >= 0 ? "native GPU fence" : "completed GPU copy");
++            p->release_sync_logged = true;
++        }
++    }
+ 
+     if (p->egl_image) {
+         p->DestroyImageKHR(eglGetCurrentDisplay(), p->egl_image);
+         p->egl_image = 0;
+     }
+     if (p->image) {
+-        o->AImage_delete(p->image);
++        if (release_fd >= 0)
++            o->AImage_deleteAsync(p->image, release_fd);
++        else
++            o->AImage_delete(p->image);
+         p->image = NULL;
+     }
++    p->image_gpu_used = false;
+ }
+ 
+ static void mapper_uninit(struct ra_hwdec_mapper *mapper)
+@@ -641,7 +749,10 @@
+     }
+ 
+     if (p->dovi_yuv)
+-        MP_TRACE(mapper, "YUV map begin pts=%f\n", mapper->src->pts);
++        MP_TRACE(mapper, "YUV map begin pts=%f buffer=%p cached_pts=%f cached_buffer=%p\n",
++                 mapper->src->pts, mapper->src->planes[3],
++                 p->cached_source ? p->cached_source->pts : MP_NOPTS_VALUE,
++                 p->cached_source ? p->cached_source->planes[3] : NULL);
+ 
+     // A MediaCodec output buffer can be sent to the Surface only once. Keep a
+     // reference so redraws reuse the copied YUV planes or the retained OES image.
+@@ -726,6 +837,7 @@
+ 
+     if (p->dovi_yuv) {
+         MP_TRACE(mapper, "YUV image acquired pts=%f\n", mapper->src->pts);
++        p->image_gpu_used = true; // Also synchronize a partially failed copy.
+         if (!map_yuv_bridge(mapper, d.width, d.height))
+             return -1;
+         MP_TRACE(mapper, "YUV copy submitted pts=%f\n", mapper->src->pts);
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1293,27 +1293,77 @@
+     void **args = arg;
+     struct vo *vo = args[0];
+     bool *prepared = args[1];
+-    // Only the direct Android Dolby Vision path has the one-shot Surface
+-    // buffers addressed here. Leave other backends and ordinary video alone.
+-    if (strcmp(vo->driver->name, "gpu-next") || !vo->params ||
+-        vo->params->imgfmt != IMGFMT_MEDIACODEC ||
+-        vo->params->repr.sys != PL_COLOR_SYSTEM_DOLBYVISION)
++    bool teardown = *(bool *)args[2];
++    // Direct Android Dolby Vision and legacy GPU MediaCodec retain one-shot
++    // Surface buffers across redraws. Leave non-Surface backends alone.
++    // A copied P7 base layer can still retain a MediaCodec enhancement layer.
++    // Its one-shot Surface buffers need the same pre-reset queue cleanup.
++    bool direct_dovi = vo->params &&
++                       vo->params->imgfmt == IMGFMT_MEDIACODEC &&
++                       vo->params->repr.sys == PL_COLOR_SYSTEM_DOLBYVISION;
++    bool legacy_mediacodec = !strcmp(vo->driver->name, "gpu") &&
++                            vo->params &&
++                            vo->params->imgfmt == IMGFMT_MEDIACODEC;
++    // A BL/EL pair can already retain decoder buffers before the first pair
++    // configures the VO. Waiting for vo->params skips precisely that window.
++    if (!legacy_mediacodec &&
++        (strcmp(vo->driver->name, "gpu-next") ||
++         (!vo->opts->android_dovi_dual && !direct_dovi)))
+         return;
+ 
++    // A P7 queue can include future MediaCodec frames which were never copied
++    // to private GPU planes. Keeping that queue until a new frame arrives can
++    // map a flushed one-shot buffer during a subtitle/OSD redraw (observed
++    // immediately after an audio-enabled seek). Leave the last drawn window
++    // buffer intact, but drop queued hardware frames before codec flush.
++    bool release_current = teardown || legacy_mediacodec || direct_dovi;
++
++    if (!vo->params)
++        MP_DBG(vo, "Preparing P7 Surface queue before first VO configuration\n");
++
+     struct vo_internal *in = vo->in;
+     mp_mutex_lock(&in->lock);
++    if (!release_current && vo->opts->android_dovi_dual && in->current_frame) {
++        // A copied/software BL can still have a hardware Surface EL. Do not
++        // change the retained-frame behavior for an entirely software pair.
++        for (int n = 0; n < in->current_frame->num_frames; n++) {
++            struct mp_image *img = in->current_frame->frames[n];
++            if (img && (img->imgfmt == IMGFMT_MEDIACODEC ||
++                        (img->enhancement_layer &&
++                         img->enhancement_layer->imgfmt == IMGFMT_MEDIACODEC)))
++                release_current = true;
++        }
++    }
+     forget_frames(vo);
+     reset_vsync_timings(vo);
++    if (release_current) {
++        talloc_free(in->current_frame);
++        in->current_frame = NULL;
++        in->request_redraw = false;
++        in->want_redraw = false;
++        vo->want_redraw = false;
++    }
+     mp_mutex_unlock(&in->lock);
+-    vo->driver->control(vo, VOCTRL_RESET, NULL);
++    vo->driver->control(vo, !legacy_mediacodec && release_current
++                           ? VOCTRL_PREPARE_DECODER_UNINIT : VOCTRL_RESET, NULL);
+     *prepared = true;
+-    MP_DBG(vo, "Prepared Dolby Vision Surface queue before decoder reset\n");
++    MP_DBG(vo, "Prepared Dolby Vision Surface queue before decoder %s\n",
++           teardown ? "uninit" : "reset");
+ }
+ 
+ bool vo_prepare_decoder_reset(struct vo *vo)
+ {
+-    bool prepared = false;
+-    void *args[] = {vo, &prepared};
++    bool prepared = false, teardown = false;
++    void *args[] = {vo, &prepared, &teardown};
++    if (vo)
++        mp_dispatch_run(vo->in->dispatch, prepare_decoder_reset, args);
++    return prepared;
++}
++
++bool vo_prepare_decoder_uninit(struct vo *vo)
++{
++    bool prepared = false, teardown = true;
++    void *args[] = {vo, &prepared, &teardown};
+     if (vo)
+         mp_dispatch_run(vo->in->dispatch, prepare_decoder_reset, args);
+     return prepared;
+
+diff --git a/video/out/vo.h b/video/out/vo.h
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -57,6 +57,7 @@
+ enum mp_voctrl {
+     /* signal a device reset seek */
+     VOCTRL_RESET = 1,
++    VOCTRL_PREPARE_DECODER_UNINIT,
+     /* Handle input and redraw events, called by vo_check_events() */
+     VOCTRL_CHECK_EVENTS,
+     /* signal a device pause */
+@@ -542,6 +543,7 @@
+ void vo_seek_reset(struct vo *vo);
+ // Drain the in-flight Android Dolby Vision draw before invalidating decoder buffers.
+ bool vo_prepare_decoder_reset(struct vo *vo);
++bool vo_prepare_decoder_uninit(struct vo *vo);
+ void vo_destroy(struct vo *vo);
+ void vo_set_paused(struct vo *vo, bool paused);
+ int64_t vo_get_drop_count(struct vo *vo);
+
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -963,6 +963,11 @@
+         }
+ 
+         if (el_ok) {
++            // EL contains NLQ residual codes, not limited-range display YUV.
++            // Normalize its storage by (2^sample_bits-1)/(2^code_bits-1),
++            // so code nlq_offset remains exactly neutral on both decode paths.
++            if (frame->repr.dovi && frame->repr.dovi->nlq_active)
++                fp->el_frame.repr.levels = PL_COLOR_LEVELS_FULL;
+             pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
+             frame->enhancement_layer = &fp->el_frame;
+         } else {
+@@ -1279,8 +1284,11 @@
+         // buffers already released to the Surface (or invalidated by flush)
+         // cannot be submitted again. Keep the old queue and mapper until a
+         // genuinely new frame arrives, as VOCTRL_RESET promises below.
++        // This also applies to a copied BL paired with a hardware Surface EL.
+         if (p->want_reset && id <= p->last_id &&
+-            frame->frames[n]->imgfmt == IMGFMT_MEDIACODEC &&
++            (frame->frames[n]->imgfmt == IMGFMT_MEDIACODEC ||
++             (frame->frames[n]->enhancement_layer &&
++              frame->frames[n]->enhancement_layer->imgfmt == IMGFMT_MEDIACODEC)) &&
+             frame->frames[n]->params.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION)
+         {
+             MP_DBG(vo, "Deferring MediaCodec queue reset for retained frame %d\n", id);
+@@ -2098,6 +2106,16 @@
+     case VOCTRL_RESET:
+         // Defer until the first new frame (unique ID) actually arrives
+         p->want_reset = true;
++        return VO_TRUE;
++
++    case VOCTRL_PREPARE_DECODER_UNINIT:
++        // Unlike seek, teardown must release even the retained redraw frame
++        // before its MediaCodec owner is invalidated. Run on the VO thread.
++        pl_queue_reset(p->queue);
++        p->last_pts = 0.0;
++        p->last_id = 0;
++        p->flush_cache = true;
++        p->want_reset = false;
+         return VO_TRUE;
+ 
+     case VOCTRL_PERFORMANCE_DATA: {

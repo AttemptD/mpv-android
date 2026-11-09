@@ -1,0 +1,31 @@
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -470,7 +470,11 @@
+                                       prefix: '#include <poll.h>')}
+ features += {'memrchr': cc.has_function('memrchr', args: '-D_GNU_SOURCE',
+                                         prefix: '#include <string.h>')}
+-features += {'clone': cc.has_header_symbol('sched.h', 'clone', args: '-D_GNU_SOURCE')}
++# Android's ART signal handlers and Bionic fdsan bookkeeping must not be
++# modified by a CLONE_VM child. Use Bionic fork(), including its atfork and
++# child-only fdsan handling, instead of the shared-address-space fast path.
++features += {'clone': host_machine.system() != 'android' and
++                     cc.has_header_symbol('sched.h', 'clone', args: '-D_GNU_SOURCE')}
+ features += {'rfork': cc.has_header_symbol('unistd.h', 'rfork_thread')}
+ 
+ optical_devices = {
+diff --git a/options/options.c b/options/options.c
+--- a/options/options.c
++++ b/options/options.c
+@@ -1027,7 +1027,10 @@
+     .osd_duration = 1000,
+ #if HAVE_LUA
+     .lua_load_osc = true,
+-    .lua_load_ytdl = true,
++    // Android apps do not bundle executable yt-dlp/youtube-dl helpers. Failed
++    // media URLs should report their original error, not spawn missing helpers.
++    // Keep other Lua scripts (including app playback policy) enabled.
++    .lua_load_ytdl = !HAVE_ANDROID,
+     .lua_ytdl_format = NULL,
+     .lua_ytdl_raw_options = NULL,
+     .lua_load_stats = true,

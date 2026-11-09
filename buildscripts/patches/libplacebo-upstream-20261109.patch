@@ -1,0 +1,94 @@
+diff --git a/src/include/libplacebo/renderer.h b/src/include/libplacebo/renderer.h
+index 24044370..ced8adb1 100644
+--- a/src/include/libplacebo/renderer.h
++++ b/src/include/libplacebo/renderer.h
+@@ -346,6 +346,10 @@ struct pl_render_params {
+     // disabling linear scaling and sigmoidization.
+     bool force_low_bit_depth_fbos;
+ 
++    // Android P7 experiment: retain 12-bit FEL reconstruction precision in
++    // float32 intermediates. Opt-in; ordinary rendering keeps its preference.
++    bool prefer_fel_float32;
++
+     // If this is true, all shaders will be generated as "dynamic" shaders,
+     // with any compile-time constants being replaced by runtime-adjustable
+     // values. This is generally a performance loss, but has the advantage of
+diff --git a/src/opengl/formats.c b/src/opengl/formats.c
+index 9f24cae6..91e4eb12 100644
+--- a/src/opengl/formats.c
++++ b/src/opengl/formats.c
+@@ -150,6 +150,13 @@ static const struct gl_format formats_float32_gles_fbo[] = {
+     {GL_RGBA32F,        RGBA,  FLT, FMT("rgba32f", 32, FLOAT, S|F|V)},
+ };
+ 
++static const struct gl_format formats_float32_gles_linear[] = {
++    {GL_R32F,    R,    FLT, FMT("r32f",    32, FLOAT, S|L|F|V)},
++    {GL_RG32F,   RG,   FLT, FMT("rg32f",   32, FLOAT, S|L|F|V)},
++    {GL_RGB32F,  RGB,  FLT, FMT("rgb32f",  32, FLOAT, S|L|V)},
++    {GL_RGBA32F, RGBA, FLT, FMT("rgba32f", 32, FLOAT, S|L|F|V)},
++};
++
+ // 16-bit floating point texture formats
+ static const struct gl_format formats_float16[] = {
+     {GL_R16F,           R,     FLT,  FMT("r16f",    16, FLOAT, S|L|F)},
+@@ -526,8 +533,15 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+             DO_FORMATS(formats_bgra_gles);
+         DO_FORMATS(formats_uint);
+         if (p->gles_ver >= 32 || pl_opengl_has_ext(p->gl, "GL_EXT_color_buffer_float")) {
+-            DO_FORMATS(formats_float32_gles_fbo);
+             DO_FORMATS(formats_float16_fbo);
++            // GLES 3 supports float32 textures; color_buffer_float additionally
++            // makes R/RG/RGBA32F renderable. Linear filtering is a separate
++            // optional extension, and RGB32F is not color-renderable on GLES.
++            if (pl_opengl_has_ext(p->gl, "GL_OES_texture_float_linear")) {
++                DO_FORMATS(formats_float32_gles_linear);
++            } else {
++                DO_FORMATS(formats_float32_gles_fbo);
++            }
+         } else {
+             DO_FORMATS(formats_float32_gles);
+             DO_FORMATS(formats_float16_fallback);
+diff --git a/src/renderer.c b/src/renderer.c
+index d9bc5e09..6e645f47 100644
+--- a/src/renderer.c
++++ b/src/renderer.c
+@@ -418,11 +418,21 @@ static void find_fbo_format(struct pass_state *pass)
+     if (params->disable_fbos || (rr->errors & PL_RENDER_ERR_FBO) || pass->fbofmt[4])
+         return;
+ 
++    // FEL reconstruction carries up to 12-bit code precision. A half-float
++    // intermediate only has 11 significant bits near full scale, so prefer
++    // float32 for active EL composition. MEL and non-DV keep the old preference.
++    const struct pl_frame *image = &pass->image;
++    bool fel = params->prefer_fel_float32 && image->enhancement_layer &&
++               image->repr.sys == PL_COLOR_SYSTEM_DOLBYVISION &&
++               image->repr.dovi && image->repr.dovi->nlq_active;
++
+     struct {
+         enum pl_fmt_type type;
+         int depth;
+         enum pl_fmt_caps caps;
+     } configs[] = {
++        {PL_FMT_FLOAT, 32, PL_FMT_CAP_LINEAR},
++        {PL_FMT_FLOAT, 32, PL_FMT_CAP_SAMPLEABLE},
+         // Prefer floating point formats first
+         {PL_FMT_FLOAT, 16, PL_FMT_CAP_LINEAR},
+         {PL_FMT_FLOAT, 16, PL_FMT_CAP_SAMPLEABLE},
+@@ -440,6 +450,8 @@ static void find_fbo_format(struct pass_state *pass)
+ 
+     pl_fmt fmt = NULL;
+     for (int i = 0; i < PL_ARRAY_SIZE(configs); i++) {
++        if (configs[i].depth == 32 && !fel)
++            continue;
+         if (params->force_low_bit_depth_fbos && configs[i].depth > 8)
+             continue;
+ 
+@@ -449,6 +461,8 @@ static void find_fbo_format(struct pass_state *pass)
+             continue;
+ 
+         pass->fbofmt[4] = fmt;
++        if (fel)
++            PL_TRACE(rr, "FEL composition intermediate: %s", fmt->name);
+ 
+         // Probe the right variant for each number of channels, falling
+         // back to the next biggest format

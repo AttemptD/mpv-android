@@ -1,6 +1,7 @@
 #!/bin/bash -e
 
 . ./include/depinfo.sh
+. ./include/apply-patches.sh
 
 [ -z "$IN_CI" ] && IN_CI=0
 [ -z "$WGET" ] && WGET=wget
@@ -16,6 +17,34 @@ fi
 
 # dav1d
 [ ! -d dav1d ] && git clone https://github.com/videolan/dav1d
+
+# libsmb2 (SMB client for FFmpeg smb:// protocol)
+[ ! -d libsmb2 ] && git clone --depth 1 -b "$v_libsmb2" https://github.com/sahlberg/libsmb2 libsmb2
+
+# libbluray (mpv Blu-ray / bd_open_stream remote ISO)
+if [ ! -d libbluray ]; then
+	mkdir libbluray
+	$WGET "https://download.videolan.org/pub/videolan/libbluray/${v_libbluray}/libbluray-${v_libbluray}.tar.bz2" -O - | \
+		tar -xj -C libbluray --strip-components=1
+fi
+
+# DVD navigation stack. These are linked statically into libmpv so the app
+# does not need to package three additional runtime libraries.
+if [ ! -d libdvdcss ]; then
+	mkdir libdvdcss
+	$WGET "https://download.videolan.org/pub/libdvdcss/${v_libdvdcss}/libdvdcss-${v_libdvdcss}.tar.bz2" -O - | \
+		tar -xj -C libdvdcss --strip-components=1
+fi
+if [ ! -d libdvdread ]; then
+	mkdir libdvdread
+	$WGET "https://download.videolan.org/pub/videolan/libdvdread/${v_libdvdread}/libdvdread-${v_libdvdread}.tar.bz2" -O - | \
+		tar -xj -C libdvdread --strip-components=1
+fi
+if [ ! -d libdvdnav ]; then
+	mkdir libdvdnav
+	$WGET "https://download.videolan.org/pub/videolan/libdvdnav/${v_libdvdnav}/libdvdnav-${v_libdvdnav}.tar.bz2" -O - | \
+		tar -xj -C libdvdnav --strip-components=1
+fi
 
 # ffmpeg
 if [ ! -d ffmpeg ]; then
@@ -73,7 +102,11 @@ if [ ! -d lua ]; then
 fi
 
 # libplacebo
-[ ! -d libplacebo ] && git clone --recursive https://github.com/haasn/libplacebo
+if [ ! -d libplacebo ]; then
+	git clone https://github.com/haasn/libplacebo
+	git -C libplacebo checkout --detach "$v_libplacebo"
+	git -C libplacebo submodule update --init --recursive
+fi
 
 # curl
 if [ ! -d curl ]; then
@@ -83,6 +116,35 @@ if [ ! -d curl ]; then
 fi
 
 # mpv
-[ ! -d mpv ] && git clone https://github.com/mpv-player/mpv
+if [ ! -d mpv ]; then
+	git clone "$mpv_repository" mpv
+	git -C mpv remote add upstream "$mpv_upstream_repository"
+	git -C mpv checkout --detach "$v_mpv"
+fi
 
+# Local patches (not upstream): SMB via libsmb2, remote Blu-ray ISO via libbluray stream
+PATCHROOT="$(cd .. && pwd)/patches"
+if [ -d ffmpeg ] && [ -f "$PATCHROOT/ffmpeg-libsmb2.patch" ]; then
+	(
+		cd ffmpeg
+		if ! grep -q 'extern const URLProtocol ff_libsmb2_protocol' libavformat/protocols.c 2>/dev/null; then
+			git apply --whitespace=fix "$PATCHROOT/ffmpeg-libsmb2.patch" \
+				|| echo >&2 "Warning: ffmpeg-libsmb2.patch did not apply (clean ffmpeg tree recommended)."
+		fi
+	)
+fi
+if [ -d ffmpeg ] && [ -f "$PATCHROOT/ffmpeg-mediacodec-dovi-metadata.patch" ]; then
+	(
+		cd ffmpeg
+		if ! grep -q 'mediacodec_dovi_parse_packet' libavcodec/mediacodecdec.c 2>/dev/null; then
+			git apply --whitespace=fix "$PATCHROOT/ffmpeg-mediacodec-dovi-metadata.patch" \
+				|| echo >&2 "Warning: ffmpeg-mediacodec-dovi-metadata.patch did not apply (clean ffmpeg tree recommended)."
+		fi
+	)
+fi
+# libplacebo is still maintained as a patch against its pinned upstream tag.
+apply_pinned_patch libplacebo "$v_libplacebo" "$PATCHROOT/libplacebo-upstream-20261109.patch"
+# The mpv fork commit already contains the complete local implementation.
+# Keep its patch as an export, without applying it again to committed sources.
+require_revision mpv "$v_mpv"
 cd ..

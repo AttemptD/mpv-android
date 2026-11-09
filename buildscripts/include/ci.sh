@@ -4,6 +4,7 @@
 cd "$( dirname "${BASH_SOURCE[0]}" )/.."
 
 . ./include/depinfo.sh
+. ./include/apply-patches.sh
 
 v_ci_archs="armv7l arm64"
 
@@ -63,10 +64,12 @@ elif [ "$1" = "install" ]; then
 	IN_CI=1 ./include/download-sdk.sh
 
 	msg "Fetching mpv"
-	mkdir -p deps/mpv
-	$WGET https://github.com/mpv-player/mpv/archive/master.tar.gz -O master.tgz
-	tar -xzf master.tgz -C deps/mpv --strip-components=1
-	rm master.tgz
+	if [ ! -d deps/mpv ]; then
+		git clone "$mpv_repository" deps/mpv
+		git -C deps/mpv remote add upstream "$mpv_upstream_repository"
+		git -C deps/mpv checkout --detach "$v_mpv"
+	fi
+	require_revision deps/mpv "$v_mpv"
 
 	msg "Trying to fetch existing prefix"
 	mkdir -p prefix

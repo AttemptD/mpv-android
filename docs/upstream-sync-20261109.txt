@@ -1,0 +1,149 @@
+2026-11-09 mpv 上游同步记录
+
+合并结果
+mpv-android: 9798fe79a2c7ca925e2724a2bcc360b186b03d9a
+          -> ebf1b3f0cbe9d6154a43cf6ec1ad6fc32a1b2d47（22 个提交）
+mpv 内核: b955aa28f3dc93dc6b21485a0d5b7feb8e6dc10f
+       -> d9d402dc07d02c9aa178fb3e33adc390fa2785cc（531 个提交）
+两者均快进到 2026-11-08 的官方 master。同步时保留的本地修改，
+后续提交到各自 Fork 的 codex/afuse 分支，配置见本文末尾。
+libplacebo 为满足新版 mpv 的依赖要求，从 7.371.0 更新到 v7.387.0
+（275f7dea27924cdd34ab2e6c20e448b6bc4fab65），保留本地 FEL 修改。
+libplacebo 没有追到 master；该稳定标签之后还有 13 个提交未合入。
+
+更新中与 Android / Afuse 功能有关的内容
+- mpv-android: 文档选择器恢复状态、目录选择和自然排序；副字幕标签页及
+  延迟按钮修正；艺术家/专辑回退修正；配置编辑器滚动；release bundle
+  构建修正；中文翻译和 CA 证书更新；启用 flatten-editions。
+- mpv: DVD、Blu-ray 菜单导航与静帧处理，DVD-Audio，ISO 类型自动探测；
+  光盘跳转、字幕调色板、章节名、语言/地区和轨道选择处理改进。
+- mpv: AImageReader 默认 maxImages 从 5 降到 3，检查 MediaCodec 渲染
+  返回值及 Surface 创建失败，收紧获取图片失败时的处理。
+- mpv: gpu-next 在队列持有期间保留硬解映射、延迟队列重置，修改映射
+  选项后重新映射帧，改进 HDR 黑电平、OSD 更新和色调映射参数。
+- mpv: 修复日志满缓冲等待死锁（本地同类补丁已由上游替代）、大型标准
+  输入写入时的子进程死锁、MKV 索引前跳转和 HTTP 重试计数等问题。
+
+外层 mpv-android
+仅 depinfo.sh 同时被上游和本地修改，三方合并成功，无文本冲突。
+JNI eventEndFile、本地依赖构建脚本及原有未跟踪文件均已保留。
+
+内核中的 9 个文本冲突文件及处理
+DOCS/man/options.rst
+  同时保留新增官方光盘选项和本地远程 ISO 缓存选项。
+common/msg.c
+  使用上游重新检查满缓冲区条件的 while 实现，移除已被替代的本地实现。
+meson.build
+  保留新 pipe2/rfork 探测；继续禁用 Android CLONE_VM 路径；dvdnav 保持
+  静态链接，同时采用新版 >= 6.1.0 的要求。
+options/options.h
+  合并 Blu-ray 官方字段、本地缓存字段和新的 DVD-Audio 配置结构。
+player/command.c
+  保留官方重建 VO 时维护 lavfi-complex 的逻辑，同时保留 P7 暂停位置
+  和 decoder 重建前阻止旧数据进入的逻辑。
+stream/stream_bluray.c
+  以官方菜单/导航实现为基础移植本地 HTTP/SMB 块缓存、预取、快速打开
+  和远程 DVD 回退，保留新菜单、语言和地区设置。
+stream/stream_dvdnav.c
+  将初始化、打开和完成设置拆开，让本地远程回调源与官方普通源使用
+  相同的菜单/区域/轨道逻辑，保留清理和锁初始化顺序。
+video/out/hwdec/hwdec_aimagereader.c
+  保留独立 P7 Surface、原始 YUV 桥、缓存帧和 fence；合入官方错误检查；
+  普通路径使用 3 个图像槽，本地 opt-in 路径继续使用 2 个。
+video/out/opengl/formats.h
+  官方占用了 bit 9 和 bit 10；本地 F_EXTF32 移到 bit 11，避免能力标记冲突。
+
+额外依赖冲突
+libplacebo/src/opengl/formats.c 有 1 个冲突文件。保留官方区分可采样与可
+渲染 float32 格式的实现，并继续按独立扩展检测线性过滤能力。
+prefer_fel_float32 本地 opt-in 和 FEL 中间纹理精度设置均保留。
+
+可重现补丁
+buildscripts/patches/mpv-upstream-20261109.patch
+buildscripts/patches/libplacebo-upstream-20261109.patch
+补丁分别包含 32 个和 3 个本地源码文件的完整差异，包括新增头文件。
+初次同步时 depinfo.sh 固定了对应上游 SHA，并使用统一函数应用补丁。
+Fork 配置后，mpv 改为直接使用包含修改的 Fork 提交，不再重复应用补丁。
+旧 mpv 增量补丁仍保留作为历史，新流程不再叠加旧补丁。
+CI 缓存标识包含 libplacebo 修订，避免复用旧依赖。
+
+验证范围
+- 在隔离目录用现有 NDK r29 编译并链接 ARM64 libplacebo + libmpv 成功。
+- 现有 MEL classifier 的 17 个断言通过。
+- 两个新补丁可在干净官方源码上完整应用并反向检查，重放结果与本地
+  对应文件逐字节一致；依赖下载的重复执行检查通过。
+- 两个现有 FFmpeg 补丁在当前 FFmpeg 源码上反向检查通过。
+- Shell 语法、git diff --check、无未解决冲突及 DVD 未解析符号检查通过。
+- 正式 prefix、JNI 库、APK 和应用项目中的已有 native 库未替换。
+- 未执行真机播放回归、其余 ABI 编译或完整 Gradle/APK 构建。
+- 上游默认 NDK 已升级到 r30；本机只有 r29。正式构建需准备 r30，并
+  按更新后的版本清单重建依赖；本次隔离编译没有降低上游版本要求。
+
+备份位置
+/private/tmp/mpv-upstream-20261109-b_q4igji
+其中 android / mpv / libplacebo 包含原始 HEAD、差异、源文件、校验值及
+stash 对象 ID。各仓库的命名 stash 也保留。临时目录不应当作长期备份。
+
+上传与后续同步
+Fork mpv-android 后，可把原官方 origin 重命名为 upstream，自己的 Fork
+设为 origin；定制分支合并 upstream/master，然后推到自己的 origin。
+mpv 内核、FFmpeg、libplacebo 是独立嵌套仓库，且被外层 .gitignore 忽略。
+若希望直接维护和浏览这些源码，分别 Fork 相应项目，并固定子项目 SHA；
+若继续使用外层补丁模式，必须把补丁、构建脚本和版本清单全部提交。
+只创建 Fork 或推送外层 master 不会保存未提交修改，也不会上传忽略的
+依赖源码。上游同步阶段未创建 Fork；后续 Fork 与提交配置见本文末尾。
+
+mpv-android 上游提交列表
+751d532 2026-09-11 buildscripts: update NDK
+276dad8 2026-09-17 buildscripts: update libs
+989d11f 2026-09-17 app: fix building release bundle
+fdf74f6 2026-09-17 app/build: new release
+687c7fd 2026-09-29 buildscripts: update libs
+c2e02fe 2026-10-06 FilePickerActivity: Remove content-based directory filtering
+3da10a9 2026-10-16 buildscripts: Fix "jre" -> "jdk" in download-sdk.sh
+a93a878 2026-10-17 Utils: Fix artist/album fallback in formatArtistAlbum()
+e568b10 2026-10-07 FilePickerActivity: sort names in natural order
+86b9b2d 2026-10-17 buildscripts: update libs and pinned CI ffmpeg
+d3844fe 2026-10-17 DocumentPickerFragment: small refactor
+e9e9326 2026-10-17 FilePickerActivity: allow picking folder in document picker
+4cb3f8c 2026-10-18 res: wrap conf_editor in a ScrollView
+2540110 2026-10-18 Utils: add shared helper for in-memory playlists
+62013d4 2026-10-20 assets: update CA bundle
+73a7c69 2026-10-23 MPVView: set --flatten-editions
+48a0050 2026-10-26 MPVActivity: Account for secondary sub when hiding delay button
+3cc4665 2026-10-26 SubTrackDialog: Default to secondary tab when only it is active
+d25d7c1 2026-10-28 buildscripts: update harfbuzz
+f700f6f 2026-10-29 MainScreenFragment: restore document picker state after startup
+255901d 2026-10-30 MPVView: drop obsolete API level check
+ebf1b3f 2026-11-08 Update Simplified Chinese translation
+
+完整 531 条内核上游提交列表保存在备份目录 mpv/upstream-commits.txt。
+
+2026-11-09 Fork 与提交配置
+
+GitHub 账号：AttemptD
+外层 Fork：https://github.com/AttemptD/mpv-android
+内核 Fork：https://github.com/AttemptD/mpv
+两个仓库的定制分支均为 codex/afuse，master 保留官方基线。
+origin 指向自己的 Fork；upstream 指向各自的官方仓库。
+内核修改提交：1db14e06c1192f7b635afb9d4c342ace552d7d93
+
+重新下载时，外层项目从 AttemptD/mpv 获取 v_mpv 指定的完整提交。
+v_mpv_upstream 保留官方基线，mpv-upstream-20261109.patch 保留完整差异
+导出；该补丁不再叠加到 Fork 源码上。libplacebo 继续使用固定官方版本
+和已保存的本地补丁。FFmpeg 的本地修改由两个现有补丁保存。
+
+以后同步（在各自仓库中执行，先处理未提交修改）：
+  git switch codex/afuse
+  git fetch upstream
+  git merge upstream/master
+  git push origin codex/afuse
+
+先同步、验证并推送内核，再将外层 buildscripts/include/depinfo.sh 中
+v_mpv 更新为对应内核提交，v_mpv_upstream 更新为合入的官方基线。需要
+更新差异导出时，在外层根目录执行：
+  git -C buildscripts/deps/mpv diff --binary UPSTREAM_SHA HEAD > buildscripts/patches/mpv-upstream-20261109.patch
+其中 UPSTREAM_SHA 使用 v_mpv_upstream 的实际值。随后提交并推送外层。
+
+请使用普通 merge/push 保留已经发布的提交历史。构建目录、prefix、SDK、
+JNI 二进制和 APK 沿用现有忽略规则，源码修改、补丁与测试资料均入库。

@@ -1,0 +1,315 @@
+diff --git a/filters/f_enhancement_pair.c b/filters/f_enhancement_pair.c
+index 7b74d10fc1..f5a67a67ff 100644
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -16,14 +16,19 @@
+  */
+ 
+ #include <libavutil/buffer.h>
++#include <libavutil/frame.h>
+ 
+ #include "common/common.h"
+ #include "common/msg.h"
+ #include "demux/stheader.h"
++#include "demux/demux.h"
++#include "options/m_config.h"
++#include "options/options.h"
+ #include "f_decoder_wrapper.h"
+ #include "f_enhancement_pair.h"
+ #include "filter_internal.h"
+ #include "video/mp_image.h"
++#include "video/dovi_mel.h"
+ 
+ // PTS-match tolerance, in seconds.
+ #define PTS_MATCH_TOLERANCE 1e-6
+@@ -32,6 +37,11 @@
+ #define QUEUE_MAX MP_ENHANCEMENT_PAIR_QUEUE_MAX
+ 
+ struct priv {
++    struct sh_stream *el_sh;
++    struct demuxer *demuxer;
++    bool mel_fast;
++    bool el_deselected;
++    bool mel_logged;
+     struct mp_decoder_wrapper *el_dec;
+     struct mp_pin *el_in; // el_dec->f->pins[0]
+ 
+@@ -46,6 +56,45 @@ struct priv {
+     bool el_seen;
+ };
+ 
++static bool base_has_mel_rpu(struct mp_image *bl)
++{
++    if (bl->params.no_dovi || !bl->dovi)
++        return false;
++    for (int n = 0; n < bl->num_ff_side_data; n++) {
++        if (bl->ff_side_data[n].type == AV_FRAME_DATA_DOVI_METADATA)
++            return mp_dovi_is_mel((void *)bl->ff_side_data[n].buf->data);
++    }
++    return false;
++}
++
++static void restore_el_selection(struct priv *p, double pts)
++{
++    if (p->el_deselected) {
++        demuxer_select_track(p->demuxer, p->el_sh, pts, true);
++        p->el_deselected = false;
++    }
++}
++
++static bool create_el_decoder(struct mp_filter *f)
++{
++    struct priv *p = f->priv;
++    p->el_dec = mp_decoder_wrapper_create(f, p->el_sh);
++    if (p->el_dec)
++        mp_decoder_wrapper_set_extra_hw_frames(p->el_dec, QUEUE_MAX);
++    if (!p->el_dec || !mp_decoder_wrapper_reinit(p->el_dec)) {
++        MP_WARN(f, "Failed to set up enhancement-layer decoder; "
++                "rendering base layer only.\n");
++        if (p->el_dec)
++            talloc_free(p->el_dec->f);
++        p->el_dec = NULL;
++        p->el_eof = true;
++        return false;
++    }
++    p->el_in = p->el_dec->f->pins[0];
++    mp_pin_set_manual_connection_for(p->el_in, f);
++    return true;
++}
++
+ static int pts_cmp(double a, double b)
+ {
+     if (a == MP_NOPTS_VALUE || b == MP_NOPTS_VALUE)
+@@ -122,7 +171,31 @@ static void pair_process(struct mp_filter *f)
+     struct mp_pin *out = f->ppins[1];
+ 
+     drain_pin(f, in, &p->bl_pending, &p->num_bl_pending, &p->bl_eof);
+-    drain_pin(f, p->el_in, &p->el_pending, &p->num_el_pending, &p->el_eof);
++    if (p->mel_fast && !p->el_dec && !p->el_eof && p->num_bl_pending) {
++        // Only BL-carried, explicitly zero-residual metadata is sufficient to
++        // bypass EL. Dual-track files carrying RPU on EL keep the old decoder.
++        while (p->num_bl_pending && mp_pin_in_needs_data(out) &&
++               base_has_mel_rpu(p->bl_pending[0])) {
++            struct mp_image *bl = take_head(&p->bl_pending, &p->num_bl_pending);
++            if (!p->el_deselected) {
++                demuxer_select_track(p->demuxer, p->el_sh, bl->pts, false);
++                p->el_deselected = true;
++            }
++            if (!p->mel_logged) {
++                MP_INFO(f, "MEL fast path: BL + RPU; enhancement decoder bypassed.\n");
++                p->mel_logged = true;
++            }
++            mp_pin_in_write(out, MAKE_FRAME(MP_FRAME_VIDEO, bl));
++        }
++        if (p->num_bl_pending && !base_has_mel_rpu(p->bl_pending[0])) {
++            // Metadata can change inside a stream. Re-enable the original EL
++            // path rather than caching a file-wide MEL classification.
++            restore_el_selection(p, p->bl_pending[0]->pts);
++            create_el_decoder(f);
++        }
++    }
++    if (p->el_in)
++        drain_pin(f, p->el_in, &p->el_pending, &p->num_el_pending, &p->el_eof);
+     if (p->num_el_pending > 0)
+         p->el_seen = true;
+ 
+@@ -192,6 +265,8 @@ static void pair_reset(struct mp_filter *f)
+     p->bl_eof = false;
+     p->el_eof = false;
+     p->el_seen = false;
++    p->mel_logged = false;
++    restore_el_selection(p, MP_NOPTS_VALUE);
+ }
+ 
+ static void pair_destroy(struct mp_filter *f)
+@@ -201,6 +276,7 @@ static void pair_destroy(struct mp_filter *f)
+         pop_head(&p->bl_pending, &p->num_bl_pending);
+     while (p->num_el_pending)
+         pop_head(&p->el_pending, &p->num_el_pending);
++    restore_el_selection(p, MP_NOPTS_VALUE);
+     // el_dec->f is a child filter, freed by the framework after this returns.
+ }
+ 
+@@ -213,7 +289,8 @@ static const struct mp_filter_info pair_filter = {
+ };
+ 
+ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+-                                             struct sh_stream *el_sh)
++                                             struct sh_stream *el_sh,
++                                             struct demuxer *demuxer)
+ {
+     if (!el_sh)
+         return NULL;
+@@ -225,17 +302,14 @@ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+     mp_filter_add_pin(f, MP_PIN_OUT, "out");
+ 
+     struct priv *p = f->priv;
+-    p->el_dec = mp_decoder_wrapper_create(f, el_sh);
+-    if (p->el_dec)
+-        mp_decoder_wrapper_set_extra_hw_frames(p->el_dec, QUEUE_MAX);
+-    if (!p->el_dec || !mp_decoder_wrapper_reinit(p->el_dec)) {
+-        MP_WARN(f, "Failed to set up enhancement-layer decoder; "
+-                "rendering base layer only.\n");
++    p->el_sh = el_sh;
++    p->demuxer = demuxer;
++    const struct mp_vo_opts *opts = mp_get_config_group(p, f->global, &vo_sub_opts);
++    p->mel_fast = demuxer && opts->android_dovi_mel_fast;
++    if (!p->mel_fast && !create_el_decoder(f)) {
+         talloc_free(f);
+         return NULL;
+     }
+-    p->el_in = p->el_dec->f->pins[0];
+-    mp_pin_set_manual_connection_for(p->el_in, f);
+ 
+     return f;
+ }
+diff --git a/filters/f_enhancement_pair.h b/filters/f_enhancement_pair.h
+index cfe1fb8b96..599618c214 100644
+--- a/filters/f_enhancement_pair.h
++++ b/filters/f_enhancement_pair.h
+@@ -20,6 +20,7 @@
+ #include "filter.h"
+ 
+ struct sh_stream;
++struct demuxer;
+ 
+ // Maximum number of decoded frames the pairing filter retains while matching.
+ #define MP_ENHANCEMENT_PAIR_QUEUE_MAX 8
+@@ -38,4 +39,5 @@ struct sh_stream;
+ // 1 input pin (BL frames), 1 output pin (paired BL frames). Returns NULL
+ // on init failure. The caller should fall back to BL-only rendering.
+ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+-                                             struct sh_stream *el_sh);
++                                             struct sh_stream *el_sh,
++                                             struct demuxer *demuxer);
+diff --git a/filters/f_output_chain.c b/filters/f_output_chain.c
+index e512f613c8..26c75077a3 100644
+--- a/filters/f_output_chain.c
++++ b/filters/f_output_chain.c
+@@ -400,7 +400,8 @@ void mp_output_chain_set_vo(struct mp_output_chain *c, struct vo *vo)
+ }
+ 
+ void mp_output_chain_set_el_stream(struct mp_output_chain *c,
+-                                   struct sh_stream *el_sh)
++                                   struct sh_stream *el_sh,
++                                   struct demuxer *demuxer)
+ {
+     struct chain *p = c->f->priv;
+ 
+@@ -424,7 +425,7 @@ void mp_output_chain_set_el_stream(struct mp_output_chain *c,
+     if (el_sh) {
+         struct mp_user_filter *u = create_wrapper_filter(p);
+         u->name = "el_pair";
+-        u->f = mp_enhancement_pair_create(u->wrapper, el_sh);
++        u->f = mp_enhancement_pair_create(u->wrapper, el_sh, demuxer);
+         if (!u->f) {
+             MP_WARN(p, "Failed to set up enhancement-layer pairing.\n");
+             talloc_free(u->wrapper);
+diff --git a/filters/f_output_chain.h b/filters/f_output_chain.h
+index a9c0227783..7f23063709 100644
+--- a/filters/f_output_chain.h
++++ b/filters/f_output_chain.h
+@@ -92,5 +92,7 @@ bool mp_output_chain_deinterlace_active(struct mp_output_chain *p);
+ // Add an enhancement-layer pairing filter at the tail of the chain.
+ // Pass el_sh=NULL to remove. No-op if the same el_sh is already installed.
+ struct sh_stream;
++struct demuxer;
+ void mp_output_chain_set_el_stream(struct mp_output_chain *p,
+-                                   struct sh_stream *el_sh);
++                                   struct sh_stream *el_sh,
++                                   struct demuxer *demuxer);
+diff --git a/player/loadfile.c b/player/loadfile.c
+index 3ded4e71c4..63d5c63c8d 100644
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1603,7 +1603,8 @@ void update_vo_chain_el_pair(struct MPContext *mpctx)
+         return;
+     struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+     mp_output_chain_set_el_stream(mpctx->vo_chain->filter,
+-        track ? sh_stream_dependent_sibling(track->stream) : NULL);
++        track ? sh_stream_dependent_sibling(track->stream) : NULL,
++        track ? track->demuxer : NULL);
+ }
+ 
+ void update_lavfi_complex(struct MPContext *mpctx)
+diff --git a/video/dovi_mel.h b/video/dovi_mel.h
+new file mode 100644
+index 0000000000..6e9cd58717
+--- /dev/null
++++ b/video/dovi_mel.h
+@@ -0,0 +1,30 @@
++#ifndef MP_DOVI_MEL_H
++#define MP_DOVI_MEL_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <libavutil/dovi_meta.h>
++
++// Recognize the canonical zero-residual MEL mapping, not merely P7 or 12-bit
++// signalling. Unknown/unsupported mappings must retain the original EL path.
++static inline bool mp_dovi_is_mel(const AVDOVIMetadata *metadata)
++{
++    if (!metadata)
++        return false;
++    const AVDOVIRpuDataHeader *header = av_dovi_get_header(metadata);
++    const AVDOVIDataMapping *mapping = av_dovi_get_mapping(metadata);
++    if (header->disable_residual_flag ||
++        mapping->nlq_method_idc != AV_DOVI_NLQ_LINEAR_DZ ||
++        header->coef_log2_denom >= 63)
++        return false;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVINLQParams *nlq = &mapping->nlq[c];
++        if (nlq->nlq_offset || nlq->linear_deadzone_slope ||
++            nlq->linear_deadzone_threshold ||
++            nlq->vdr_in_max != (UINT64_C(1) << header->coef_log2_denom))
++            return false;
++    }
++    return true;
++}
++
++#endif
+diff --git a/options/options.c b/options/options.c
+--- a/options/options.c
++++ b/options/options.c
+@@ -172,6 +172,9 @@
+     {"video-margin-ratio-top", OPT_FLOAT(margin_y[0]), M_RANGE(0.0, 1.0)},
+     {"video-margin-ratio-bottom", OPT_FLOAT(margin_y[1]), M_RANGE(0.0, 1.0)},
+     {"video-crop", OPT_RECT(video_crop), .flags = UPDATE_IMGPAR},
++#if HAVE_EGL_ANDROID
++    {"android-dovi-mel-fast", OPT_BOOL(android_dovi_mel_fast)},
++#endif
+     {"video-unscaled", OPT_CHOICE(unscaled,
+         {"no", 0}, {"yes", 1}, {"downscale-big", 2})},
+     {"video-recenter", OPT_BOOL(recenter)},
+diff --git a/options/options.h b/options/options.h
+--- a/options/options.h
++++ b/options/options.h
+@@ -94,6 +94,7 @@
+     int swapchain_depth;  // max number of images to render ahead
+ 
+     struct m_geometry video_crop;
++    bool android_dovi_mel_fast;
+ } mp_vo_opts;
+ 
+ // Subtitle options needed by the subtitle decoders/renderers.
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -7228,6 +7228,17 @@
+     the embedding application.
+ 
+     Windows with ``--gpu-context=d3d11`` and  ``--d3d11-output-mode=composition`` only.
++
++``--android-dovi-mel-fast=<yes|no>``
++    Experimental zero-residual Dolby Vision MEL fast path (default: no).
++    Delay enhancement-layer decoder initialization until the base layer's
++    parsed RPU has been inspected. Canonical MEL frames carrying RPU on the
++    base layer can be rendered without decoding or uploading the enhancement
++    layer. The original path is retained for unknown metadata, EL-carried RPU,
++    and non-zero residuals. This is not FEL reconstruction or 12-bit output.
++
++    Set before opening the file. Embedding applications must opt in explicitly;
++    normal playback and applications not setting this option remain unchanged.
+ 
+ ``--gpu-sw``
+     Continue even if a software renderer is detected. This only works with

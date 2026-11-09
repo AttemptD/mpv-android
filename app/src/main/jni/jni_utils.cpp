@@ -44,6 +44,10 @@ void init_methods_cache(JNIEnv *env)
     mpv_MPVLib_eventProperty_Sd = env->GetStaticMethodID(mpv_MPVLib, "eventProperty", "(Ljava/lang/String;D)V"); // eventProperty(String, double)
     mpv_MPVLib_eventProperty_SS = env->GetStaticMethodID(mpv_MPVLib, "eventProperty", "(Ljava/lang/String;Ljava/lang/String;)V"); // eventProperty(String, String)
     mpv_MPVLib_event = env->GetStaticMethodID(mpv_MPVLib, "event", "(I)V"); // event(int)
+    // Optional: continue supporting older wrappers that only implement event(7).
+    mpv_MPVLib_eventEndFile = env->GetStaticMethodID(mpv_MPVLib, "eventEndFile", "(II)V");
+    if (!mpv_MPVLib_eventEndFile && env->ExceptionCheck())
+        env->ExceptionClear();
     mpv_MPVLib_logMessage_SiS = env->GetStaticMethodID(mpv_MPVLib, "logMessage", "(Ljava/lang/String;ILjava/lang/String;)V"); // logMessage(String, int, String)
     #undef FIND_CLASS
 

@@ -22,7 +22,8 @@ wasbuilt () {
 
 markbuilt () {
 	varname="built_${1//-/_}"
-	declare -g "$varname=0"
+	# Bash 3.2 (macOS) has no `declare -g`; eval sets a global dynamically named flag.
+	eval "${varname}=0"
 }
 
 loadndk () {

@@ -18,6 +18,22 @@ LOCAL_MODULE := libswresample
 LOCAL_SRC_FILES := $(PREFIX)/lib/$(LOCAL_MODULE).so
 include $(PREBUILT_SHARED_LIBRARY)
 
+# Optional runtime dependencies enabled by the local FFmpeg/mpv patches.
+# Register them so ndk-build copies them into the APK alongside libmpv.
+ifneq (,$(wildcard $(PREFIX)/lib/libbluray.so))
+include $(CLEAR_VARS)
+LOCAL_MODULE := libbluray
+LOCAL_SRC_FILES := $(PREFIX)/lib/libbluray.so
+include $(PREBUILT_SHARED_LIBRARY)
+endif
+
+ifneq (,$(wildcard $(PREFIX)/lib/libsmb2.so))
+include $(CLEAR_VARS)
+LOCAL_MODULE := libsmb2
+LOCAL_SRC_FILES := $(PREFIX)/lib/libsmb2.so
+include $(PREBUILT_SHARED_LIBRARY)
+endif
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := libpostproc
 LOCAL_SRC_FILES := $(PREFIX)/lib/$(LOCAL_MODULE).so

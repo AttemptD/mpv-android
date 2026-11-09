@@ -1,0 +1,115 @@
+diff --git a/player/command.c b/player/command.c
+index a0dccf4a37..6ad8fec524 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -8315,11 +8315,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+         struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+         struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
+         if (dec) {
++            double last_pts = mpctx->video_pts;
++            if (vo_prepare_decoder_reset(mpctx->video_out)) {
++                // Drop old frames still held by the player/filter chain too.
++                // Otherwise they can reach the VO after codec reinitialization
++                // but before the queued seek below is executed.
++                reset_playback_state(mpctx);
++            }
+             mp_decoder_wrapper_control(dec, VDCTRL_REINIT, NULL);
+             // filter chain might not change (which normally triggers this), but
+             // hwdec will.
+             mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
+-            double last_pts = mpctx->video_pts;
+             if (last_pts != MP_NOPTS_VALUE)
+                 queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
+         }
+diff --git a/player/playloop.c b/player/playloop.c
+index d899fba123..d0454afe01 100644
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -240,6 +240,9 @@ void step_frame_mute(struct MPContext *mpctx, bool mute)
+ // Clear some playback-related fields on file loading or after seeks.
+ void reset_playback_state(struct MPContext *mpctx)
+ {
++    // Finish any Surface submission and stop queued old frames before the
++    // filter reset invalidates MediaCodec's output buffers.
++    vo_prepare_decoder_reset(mpctx->video_out);
+     mp_filter_reset(mpctx->filter_root);
+ 
+     reset_video_state(mpctx);
+diff --git a/video/out/vo.c b/video/out/vo.c
+index f93f6cf979..d9aa7ab9ba 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1288,6 +1288,37 @@ void vo_seek_reset(struct vo *vo)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
++static void prepare_decoder_reset(void *arg)
++{
++    void **args = arg;
++    struct vo *vo = args[0];
++    bool *prepared = args[1];
++    // Only the direct Android Dolby Vision path has the one-shot Surface
++    // buffers addressed here. Leave other backends and ordinary video alone.
++    if (strcmp(vo->driver->name, "gpu-next") || !vo->params ||
++        vo->params->imgfmt != IMGFMT_MEDIACODEC ||
++        vo->params->repr.sys != PL_COLOR_SYSTEM_DOLBYVISION)
++        return;
++
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    forget_frames(vo);
++    reset_vsync_timings(vo);
++    mp_mutex_unlock(&in->lock);
++    vo->driver->control(vo, VOCTRL_RESET, NULL);
++    *prepared = true;
++    MP_DBG(vo, "Prepared Dolby Vision Surface queue before decoder reset\n");
++}
++
++bool vo_prepare_decoder_reset(struct vo *vo)
++{
++    bool prepared = false;
++    void *args[] = {vo, &prepared};
++    if (vo)
++        mp_dispatch_run(vo->in->dispatch, prepare_decoder_reset, args);
++    return prepared;
++}
++
+ // Whether at least 1 frame was queued or rendered since last seek or reconfig.
+ bool vo_has_frame(struct vo *vo)
+ {
+diff --git a/video/out/vo.h b/video/out/vo.h
+index f24918d460..2fc3ae8f90 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -540,6 +540,8 @@ bool vo_has_frame(struct vo *vo);
+ void vo_redraw(struct vo *vo);
+ bool vo_want_redraw(struct vo *vo);
+ void vo_seek_reset(struct vo *vo);
++// Drain the in-flight Android Dolby Vision draw before invalidating decoder buffers.
++bool vo_prepare_decoder_reset(struct vo *vo);
+ void vo_destroy(struct vo *vo);
+ void vo_set_paused(struct vo *vo, bool paused);
+ int64_t vo_get_drop_count(struct vo *vo);
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index bf4f80b7ee..1aa7cdaa79 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -1269,6 +1269,18 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     for (int n = 0; n < frame->num_frames; n++) {
+         int id = frame->frame_id + n;
+ 
++        // A seek/decoder reset retains current_frame for redraws. MediaCodec
++        // buffers already released to the Surface (or invalidated by flush)
++        // cannot be submitted again. Keep the old queue and mapper until a
++        // genuinely new frame arrives, as VOCTRL_RESET promises below.
++        if (p->want_reset && id <= p->last_id &&
++            frame->frames[n]->imgfmt == IMGFMT_MEDIACODEC &&
++            frame->frames[n]->params.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION)
++        {
++            MP_DBG(vo, "Deferring MediaCodec queue reset for retained frame %d\n", id);
++            continue;
++        }
++
+         if (p->want_reset) {
+             pl_queue_reset(p->queue);
+             p->last_pts = 0.0;
