@@ -3,6 +3,7 @@ package `is`.xyz.mpv
 import android.content.Context
 import android.graphics.Bitmap
 import android.view.Surface
+import android.os.Parcel
 
 // Wrapper for native library
 
@@ -19,7 +20,19 @@ object MPVLib {
     external fun init()
     external fun destroy()
     external fun attachSurface(surface: Surface)
+    private external fun attachSurfaceOwned(surface: Surface)
     external fun detachSurface()
+    external fun attachNativeDolbySurface(host: NativeDolbySurface?)
+
+    fun attachSurfaceForPlayback(surface: Surface) {
+        val parcel = Parcel.obtain()
+        val owned = try {
+            surface.writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            Surface.CREATOR.createFromParcel(parcel)
+        } finally { parcel.recycle() }
+        attachSurfaceOwned(owned)
+    }
 
     external fun command(cmd: Array<out String>)
 

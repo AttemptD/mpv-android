@@ -51,6 +51,10 @@ if [ ! -d ffmpeg ]; then
 	args=()
 	[ $IN_CI -eq 1 ] && args+=(--depth=1 -b "$v_ci_ffmpeg")
 	git clone https://github.com/FFmpeg/FFmpeg ffmpeg "${args[@]}"
+	if ! git -C ffmpeg cat-file -e "$v_ffmpeg^{commit}" 2>/dev/null; then
+		git -C ffmpeg fetch --depth 1 origin "$v_ffmpeg"
+	fi
+	git -C ffmpeg checkout --detach "$v_ffmpeg"
 fi
 
 # freetype2
@@ -122,26 +126,10 @@ if [ ! -d mpv ]; then
 	git -C mpv checkout --detach "$v_mpv"
 fi
 
-# Local patches (not upstream): SMB via libsmb2, remote Blu-ray ISO via libbluray stream
+# Complete, pinned exports include SMB, RPU mapping and native Dolby decoding.
+# Reverse checks preserve an already prepared local tree without applying twice.
 PATCHROOT="$(cd .. && pwd)/patches"
-if [ -d ffmpeg ] && [ -f "$PATCHROOT/ffmpeg-libsmb2.patch" ]; then
-	(
-		cd ffmpeg
-		if ! grep -q 'extern const URLProtocol ff_libsmb2_protocol' libavformat/protocols.c 2>/dev/null; then
-			git apply --whitespace=fix "$PATCHROOT/ffmpeg-libsmb2.patch" \
-				|| echo >&2 "Warning: ffmpeg-libsmb2.patch did not apply (clean ffmpeg tree recommended)."
-		fi
-	)
-fi
-if [ -d ffmpeg ] && [ -f "$PATCHROOT/ffmpeg-mediacodec-dovi-metadata.patch" ]; then
-	(
-		cd ffmpeg
-		if ! grep -q 'mediacodec_dovi_parse_packet' libavcodec/mediacodecdec.c 2>/dev/null; then
-			git apply --whitespace=fix "$PATCHROOT/ffmpeg-mediacodec-dovi-metadata.patch" \
-				|| echo >&2 "Warning: ffmpeg-mediacodec-dovi-metadata.patch did not apply (clean ffmpeg tree recommended)."
-		fi
-	)
-fi
+apply_pinned_patch ffmpeg "$v_ffmpeg" "$PATCHROOT/ffmpeg-upstream-20261109.patch"
 # libplacebo is still maintained as a patch against its pinned upstream tag.
 apply_pinned_patch libplacebo "$v_libplacebo" "$PATCHROOT/libplacebo-upstream-20261109.patch"
 # The mpv fork commit already contains the complete local implementation.

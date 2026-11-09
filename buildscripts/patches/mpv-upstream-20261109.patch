@@ -1,5 +1,23 @@
+diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
+index 70c3418852..739f09cb66 100644
+--- a/DOCS/man/input.rst
++++ b/DOCS/man/input.rst
+@@ -4030,6 +4030,13 @@ Property list
+ 
+     How these details are handled may change in the future.
+ 
++``android-native-dolby-status``
++    Android embedding status map. ``active`` becomes true after a native frame
++    has been submitted; ``failed`` reports a Surface failure and
++    ``decoder-failed`` reports native decoder initialization failure. ``frames``
++    and ``osd-updates`` count submitted video buffers and caption updates for
++    this VO instance. In other VOs, flags are false and counters are zero.
++
+ ``current-vo``
+     Current video output driver (name as used with ``--vo``).
+ 
 diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
-index dddff27f69..8a82c881ef 100644
+index dddff27f69..124d1f2e1d 100644
 --- a/DOCS/man/options.rst
 +++ b/DOCS/man/options.rst
 @@ -4024,6 +4024,25 @@ Disc Devices
@@ -28,7 +46,26 @@ index dddff27f69..8a82c881ef 100644
  ``--cdda-...``
      These options can be used to tune the CD Audio reading feature of mpv.
  
-@@ -7270,6 +7289,45 @@ them.
+@@ -7263,6 +7282,18 @@ them.
+     :/opt/homebrew/bin:  homebrew (ARM) install path
+     :/opt/homebrew/sbin: homebrew (ARM) install path
+ 
++``--android-native-dolby=<yes|no>``
++    Enable platform Dolby Vision P5/P8 decoding for the Android native Dolby VO
++    (default: no). Requires a supported decoder/display and an embedding host
++    with separate video and caption Surfaces. The embedding application selects
++    this per file; it must use another VO for unsupported streams or processing.
++
++``--android-native-dolby-surface=<reference>``
++    JNI-only reference to the embedding application's ``NativeDolbySurface``
++    object. Like ``wid``, the reference is owned by the embedding application.
++    It must outlive every VO using it. Zero detaches the host. This is not an
++    Android Surface pointer or a user-facing configuration value.
++
+ ``--android-surface-size=<WxH>``
+     Set dimensions of the rendering surface used by the Android gpu context.
+     Needs to be set by the embedding application if the dimensions change during
+@@ -7270,6 +7301,45 @@ them.
  
      Android with ``--gpu-context=android`` only.
  
@@ -74,7 +111,7 @@ index dddff27f69..8a82c881ef 100644
  ``--d3d11-composition-size=<WxH>``
      Set size of the output for d3d11 composition mode.
      When use composition mode, there is no window, must set the output size by
-@@ -7277,6 +7335,17 @@ them.
+@@ -7277,6 +7347,17 @@ them.
  
      Windows with ``--gpu-context=d3d11`` and  ``--d3d11-output-mode=composition`` only.
  
@@ -92,6 +129,29 @@ index dddff27f69..8a82c881ef 100644
  ``--gpu-sw``
      Continue even if a software renderer is detected. This only works with
      OpenGL/Vulkan backends. For d3d11, see ``--d3d11-warp``.
+diff --git a/DOCS/man/vo.rst b/DOCS/man/vo.rst
+index b43e5d7737..8040ff68b6 100644
+--- a/DOCS/man/vo.rst
++++ b/DOCS/man/vo.rst
+@@ -699,6 +699,18 @@ Available video output drivers are:
+     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
+     or ``mediacodec-copy`` along with ``--gpu-context=android``.
+ 
++``android-native-dolby`` (Android embedding)
++    Presents single-layer HEVC Dolby Vision P5/P8 through the platform decoder
++    and a native Surface. Requires ``--hwdec=mediacodec`` and
++    ``--android-native-dolby=yes``. The embedding application must supply the
++    ``NativeDolbySurface`` host through ``android-native-dolby-surface``.
++
++    The host maintains separate video, SDR subtitle/OSD, and background layers.
++    Video buffers and their dynamic metadata are not sampled by the GPU renderer.
++    Crop, zoom, aspect and 90-degree rotation use SurfaceControl geometry.
++    The application must check both the display and decoder's Dolby support.
++    Software decoding, video filters, shaders and P7/FEL require another VO.
++
+ ``wlshm`` (Wayland only)
+     Shared memory video output driver without hardware acceleration that works
+     whenever Wayland is present.
 diff --git a/demux/demux.c b/demux/demux.c
 index 296993b63f..c1c7fd1010 100644
 --- a/demux/demux.c
@@ -637,7 +697,7 @@ index 327a432705..6fbcb7cbaa 100644
  if features['dvdnav']
      dependencies += dvdnav
 diff --git a/options/options.c b/options/options.c
-index a432414551..0efb299818 100644
+index a432414551..706d6575a3 100644
 --- a/options/options.c
 +++ b/options/options.c
 @@ -172,6 +172,10 @@ static const m_option_t mp_vo_opt_list[] = {
@@ -651,16 +711,20 @@ index a432414551..0efb299818 100644
      {"video-unscaled", OPT_CHOICE(unscaled,
          {"no", 0}, {"yes", 1}, {"downscale-big", 2})},
      {"video-recenter", OPT_BOOL(recenter)},
-@@ -250,6 +254,8 @@ static const m_option_t mp_vo_opt_list[] = {
+@@ -250,6 +254,12 @@ static const m_option_t mp_vo_opt_list[] = {
  #endif
  #if HAVE_EGL_ANDROID
      {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
 +    {"android-hdr-output", OPT_BOOL(android_hdr_output)},
 +    {"android-dovi-yuv", OPT_BOOL(android_dovi_yuv)},
++#endif
++#if HAVE_ANDROID
++    {"android-native-dolby", OPT_BOOL(android_native_dolby), .flags = UPDATE_VO},
++    {"android-native-dolby-surface", OPT_INT64(android_native_dolby_surface), .flags = UPDATE_VO},
  #endif
  #if HAVE_D3D11
      {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
-@@ -1027,7 +1033,10 @@ static const struct MPOpts mp_default_opts = {
+@@ -1027,7 +1037,10 @@ static const struct MPOpts mp_default_opts = {
      .osd_duration = 1000,
  #if HAVE_LUA
      .lua_load_osc = true,
@@ -673,14 +737,16 @@ index a432414551..0efb299818 100644
      .lua_ytdl_raw_options = NULL,
      .lua_load_stats = true,
 diff --git a/options/options.h b/options/options.h
-index 1f8e7cb093..fc3c05bc31 100644
+index 1f8e7cb093..6c8cb4e585 100644
 --- a/options/options.h
 +++ b/options/options.h
-@@ -86,12 +86,16 @@ typedef struct mp_vo_opts {
+@@ -86,12 +86,18 @@ typedef struct mp_vo_opts {
      int video_sync;
  
      struct m_geometry android_surface_size;
 +    bool android_hdr_output;
++    bool android_native_dolby;
++    int64_t android_native_dolby_surface;
 +    bool android_dovi_yuv;
 +    bool android_dovi_dual;
  
@@ -693,7 +759,7 @@ index 1f8e7cb093..fc3c05bc31 100644
  } mp_vo_opts;
  
  // Subtitle options needed by the subtitle decoders/renderers.
-@@ -166,6 +170,9 @@ struct mp_bluray_opts {
+@@ -166,6 +172,9 @@ struct mp_bluray_opts {
      int min_title_length;
      int region;
      int uo_restriction;
@@ -704,7 +770,7 @@ index 1f8e7cb093..fc3c05bc31 100644
  
  struct dvda_opts {
 diff --git a/player/command.c b/player/command.c
-index 981fe47a4d..2fc05d2b33 100644
+index 981fe47a4d..96bf31ec3a 100644
 --- a/player/command.c
 +++ b/player/command.c
 @@ -34,6 +34,7 @@
@@ -735,7 +801,40 @@ index 981fe47a4d..2fc05d2b33 100644
          {"demux-duration", SUB_PROP_PTS(p.duration), .unavailable = p.duration <= 0},
          {"format-name", SUB_PROP_STR(p.format_name), .unavailable = !p.format_name},
          {"replaygain-track-peak", SUB_PROP_FLOAT(rg.track_peak),
-@@ -6104,6 +6111,75 @@ static void cmd_seek(void *p)
+@@ -3148,6 +3155,24 @@ static int mp_property_gpu_context(void *ctx, struct m_property *p, int action,
+                                 mpctx->video_out->context_name : NULL);
+ }
+ 
++static int mp_property_android_native_dolby(void *ctx, struct m_property *prop,
++                                          int action, void *arg)
++{
++    MPContext *mpctx = ctx;
++    struct voctrl_android_native_dolby state = {0};
++    if (mpctx->video_out)
++        vo_control(mpctx->video_out, VOCTRL_GET_ANDROID_NATIVE_DOLBY, &state);
++    struct m_sub_property props[] = {
++        {"active", SUB_PROP_BOOL(state.active)},
++        {"failed", SUB_PROP_BOOL(state.failed)},
++        {"decoder-failed", SUB_PROP_BOOL(state.decoder_failed)},
++        {"frames", SUB_PROP_INT64(state.frames)},
++        {"osd-updates", SUB_PROP_INT64(state.osd_updates)},
++        {0}
++    };
++    return m_property_read_sub(props, action, arg);
++}
++
+ static int mp_property_osd_dim(void *ctx, struct m_property *prop,
+                                int action, void *arg)
+ {
+@@ -4814,6 +4839,7 @@ static const struct m_property mp_properties_base[] = {
+     {"estimated-frame-number", mp_property_frame_number},
+ 
+     {"osd-dimensions", mp_property_osd_dim},
++    {"android-native-dolby-status", mp_property_android_native_dolby},
+     M_PROPERTY_ALIAS("osd-width", "osd-dimensions/w"),
+     M_PROPERTY_ALIAS("osd-height", "osd-dimensions/h"),
+     M_PROPERTY_ALIAS("osd-par", "osd-dimensions/par"),
+@@ -6104,6 +6130,75 @@ static void cmd_seek(void *p)
          mpctx->add_osd_seek_info |= OSD_SEEK_INFO_TEXT;
  }
  
@@ -811,7 +910,7 @@ index 981fe47a4d..2fc05d2b33 100644
  static void cmd_revert_seek(void *p)
  {
      struct mp_cmd_ctx *cmd = p;
-@@ -7628,6 +7704,10 @@ static void cmd_notify_property(void *p)
+@@ -7628,6 +7723,10 @@ static void cmd_notify_property(void *p)
  
  const struct mp_cmd_def mp_cmds[] = {
      { "ignore", cmd_ignore, .is_ignore = true, .is_noisy = true, },
@@ -822,17 +921,17 @@ index 981fe47a4d..2fc05d2b33 100644
  
      { "seek", cmd_seek,
          {
-@@ -8493,9 +8573,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8493,9 +8592,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
      if (flags & UPDATE_VO && mpctx->video_out) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_pin *filter_src = mpctx->vo_chain ? mpctx->vo_chain->filter_src : NULL;
 +        // Removing the video chain switches the playback clock to buffered
-+        // audio. Preserve the visible paused P7 position before that happens,
++        // audio. Preserve the visible paused Android position before that happens,
 +        // instead of resolving a relative zero seek after decoder teardown.
-+        bool android_p7 = mp_android_p7_active(mpctx);
-+        double paused_pts = opts->pause && android_p7
++        bool android_managed = mp_android_p7_active(mpctx) || opts->vo->android_native_dolby;
++        double paused_pts = opts->pause && android_managed
 +                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
-+        double resume_pts = android_p7
++        double resume_pts = android_managed
 +                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
 +        bool hold_packets = track && mpctx->demuxer && mpctx->demuxer->seekable &&
 +                            resume_pts != MP_NOPTS_VALUE;
@@ -847,7 +946,7 @@ index 981fe47a4d..2fc05d2b33 100644
          if (filter_src) {
              reinit_video_chain_src(mpctx, NULL);
              if (mpctx->vo_chain) {
-@@ -8505,9 +8599,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8505,9 +8618,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          } else {
              reinit_video_chain(mpctx);
          }
@@ -856,7 +955,7 @@ index 981fe47a4d..2fc05d2b33 100644
 -            queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
 +        if (track || filter_src) {
 +            if (paused_pts != MP_NOPTS_VALUE) {
-+                MP_DBG(mpctx, "Preserving paused P7 output position %.6f\n", paused_pts);
++                MP_DBG(mpctx, "Preserving paused Android output position %.6f\n", paused_pts);
 +                queue_seek(mpctx, MPSEEK_ABSOLUTE, paused_pts, MPSEEK_VERY_EXACT, 0);
 +            } else if (hold_packets) {
 +                queue_seek(mpctx, MPSEEK_ABSOLUTE, resume_pts, MPSEEK_EXACT, 0);
@@ -867,7 +966,7 @@ index 981fe47a4d..2fc05d2b33 100644
  
          mp_wakeup_core(mpctx);
      }
-@@ -8538,11 +8639,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8538,11 +8658,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
          if (dec) {
@@ -891,11 +990,11 @@ index 981fe47a4d..2fc05d2b33 100644
              if (last_pts != MP_NOPTS_VALUE)
                  queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
          }
-@@ -8563,10 +8675,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8563,10 +8694,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
  
      if (flags & UPDATE_VD && mpctx->vo_chain) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
-+        double paused_pts = opts->pause && opts->vo->android_dovi_dual
++        double paused_pts = opts->pause && (opts->vo->android_dovi_dual || opts->vo->android_native_dolby)
 +                            ? get_current_time(mpctx) : MP_NOPTS_VALUE;
          uninit_video_chain(mpctx);
          reinit_video_chain(mpctx);
@@ -1688,7 +1787,7 @@ index 0000000000..9286274bfb
 +
 +#endif
 diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
-index a1834e240a..c6e58971d4 100644
+index a1834e240a..abd38d19fa 100644
 --- a/video/decode/vd_lavc.c
 +++ b/video/decode/vd_lavc.c
 @@ -248,6 +248,7 @@ typedef struct lavc_ctx {
@@ -1708,7 +1807,76 @@ index a1834e240a..c6e58971d4 100644
          if (hw_ctx && hw_ctx->av_device_ref)
              return av_buffer_ref(hw_ctx->av_device_ref);
      }
-@@ -908,6 +911,7 @@ static void reset_avctx(struct mp_filter *vd)
+@@ -680,6 +683,17 @@ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
+     return M_OPT_EXIT;
+ }
+ 
++static bool native_dolby_requested(vd_ffmpeg_ctx *ctx)
++{
++#if HAVE_ANDROID
++    return ctx->vo && ctx->vo->opts->android_native_dolby &&
++        (strcmp(ctx->vo->driver->name, "mediacodec_embed") == 0 ||
++         strcmp(ctx->vo->driver->name, "android-native-dolby") == 0);
++#else
++    return false;
++#endif
++}
++
+ static void force_fallback(struct mp_filter *vd)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+@@ -712,7 +726,10 @@ static void reinit(struct mp_filter *vd)
+ 
+     bool use_hwdec = ctx->use_hwdec;
+     init_avctx(vd);
+-    if (!ctx->avctx && use_hwdec) {
++    // This VO cannot present software/copy-back frames. Report the first native
++    // failure to the host so it can retry with a compatible VO, rather than
++    // repeatedly trying a software decoder that the native-only guard rejects.
++    if (!ctx->avctx && use_hwdec && !native_dolby_requested(ctx)) {
+         do {
+             force_fallback(vd);
+         } while (!ctx->avctx);
+@@ -729,6 +746,7 @@ static void init_avctx(struct mp_filter *vd)
+     vd_ffmpeg_ctx *ctx = vd->priv;
+     struct vd_lavc_params *lavc_param = ctx->opts;
+     struct mp_codec_params *c = ctx->codec;
++    bool native_dolby = native_dolby_requested(ctx);
+ 
+     m_config_cache_update(ctx->opts_cache);
+ 
+@@ -870,6 +888,21 @@ static void init_avctx(struct mp_filter *vd)
+         goto error;
+     }
+ 
++#if HAVE_ANDROID
++    if (native_dolby) {
++        if (!ctx->use_hwdec || ctx->hwdec.copying ||
++            strcmp(lavc_codec->name, "hevc_mediacodec") != 0 ||
++            (c->dv_profile != 5 && c->dv_profile != 8)) {
++            MP_ERR(vd, "Native Dolby Vision requires P5/P8 MediaCodec Surface decoding.\n");
++            goto error;
++        }
++        if (av_opt_set_int(avctx, "native_dolby_vision", 1, AV_OPT_SEARCH_CHILDREN) < 0) {
++            MP_ERR(vd, "FFmpeg does not support native Dolby Vision Surface decoding.\n");
++            goto error;
++        }
++    }
++#endif
++
+ #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+     if (avctx->width > 8192 || avctx->height > 8192) {
+         MP_ERR(vd, "Frame size too big %" PRIu32 "x%" PRIu32 ".\n", avctx->width, avctx->height);
+@@ -898,6 +931,8 @@ static void init_avctx(struct mp_filter *vd)
+ 
+ error:
+     MP_ERR(vd, "Could not open codec.\n");
++    if (native_dolby && ctx->vo)
++        vo_control(ctx->vo, VOCTRL_ANDROID_NATIVE_DOLBY_DECODER_FAILED, NULL);
+     uninit_avctx(vd);
+ }
+ 
+@@ -908,6 +943,7 @@ static void reset_avctx(struct mp_filter *vd)
      if (ctx->avctx && avcodec_is_open(ctx->avctx))
          avcodec_flush_buffers(ctx->avctx);
      ctx->flushing = false;
@@ -1716,7 +1884,7 @@ index a1834e240a..c6e58971d4 100644
      ctx->hwdec_request_reinit = false;
      // Wait for the first keyframe after reset to ensure the decoder state is
      // valid. Seeking should already jump to a keyframe, so this is safe.
-@@ -1236,6 +1240,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+@@ -1236,6 +1272,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
  
      prepare_decoding(vd);
  
@@ -1729,7 +1897,7 @@ index a1834e240a..c6e58971d4 100644
      if (ctx->wait_for_keyframe > 0 && pkt) {
          if (!pkt->keyframe && !ctx->intra_only) {
              MP_DBG(vd, "Waiting for keyframe after reinit (dropping frame).\n");
-@@ -1300,8 +1310,22 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1300,8 +1342,22 @@ static int decode_frame(struct mp_filter *vd)
              // start over in case we get new packets at some point in the future.
              // This must take the delay queue into account, so avctx returns EOF
              // until the delay queue has been drained.
@@ -1754,7 +1922,7 @@ index a1834e240a..c6e58971d4 100644
          } else if (ret == AVERROR(EAGAIN)) {
              // just retry after caller writes a packet
          } else {
-@@ -1316,6 +1340,59 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1316,6 +1372,59 @@ static int decode_frame(struct mp_filter *vd)
      // data.
      mp_assert(ctx->pic->buf[0]);
  
@@ -2786,10 +2954,26 @@ index d252c19f95..c1f7dc5fb4 100644
      // Feature flags. They are additional and signal presence of features.
      F_CR        = 1 << 16, // color-renderable
 diff --git a/video/out/vo.c b/video/out/vo.c
-index c90a55cc4c..f5ea52d9e3 100644
+index c90a55cc4c..7e75ad47f1 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
-@@ -1286,6 +1286,87 @@ void vo_seek_reset(struct vo *vo)
+@@ -47,6 +47,7 @@
+ #include "osdep/threads.h"
+ 
+ extern const struct vo_driver video_out_mediacodec_embed;
++extern const struct vo_driver video_out_android_native_dolby;
+ extern const struct vo_driver video_out_x11;
+ extern const struct vo_driver video_out_vdpau;
+ extern const struct vo_driver video_out_xv;
+@@ -89,6 +90,7 @@ static const struct vo_driver *const video_out_drivers[] =
+     &video_out_xv,
+ #endif
+ #if HAVE_ANDROID
++    &video_out_android_native_dolby,
+     &video_out_mediacodec_embed,
+ #endif
+ #if HAVE_SDL2_VIDEO
+@@ -1286,6 +1288,87 @@ void vo_seek_reset(struct vo *vo)
      mp_mutex_unlock(&in->lock);
  }
  
@@ -2878,7 +3062,7 @@ index c90a55cc4c..f5ea52d9e3 100644
  bool vo_has_frame(struct vo *vo)
  {
 diff --git a/video/out/vo.h b/video/out/vo.h
-index f24918d460..f88aa7b61f 100644
+index f24918d460..9fae50c67f 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
 @@ -57,6 +57,7 @@ enum {
@@ -2889,7 +3073,28 @@ index f24918d460..f88aa7b61f 100644
      /* Handle input and redraw events, called by vo_check_events() */
      VOCTRL_CHECK_EVENTS,
      /* signal a device pause */
-@@ -540,6 +541,9 @@ bool vo_has_frame(struct vo *vo);
+@@ -84,6 +85,8 @@ enum mp_voctrl {
+     VOCTRL_UPDATE_PLAYBACK_STATE,       // struct voctrl_playback_state*
+ 
+     VOCTRL_PERFORMANCE_DATA,            // struct voctrl_performance_data*
++    VOCTRL_GET_ANDROID_NATIVE_DOLBY,    // struct voctrl_android_native_dolby*
++    VOCTRL_ANDROID_NATIVE_DOLBY_DECODER_FAILED,
+ 
+     VOCTRL_SET_CURSOR_VISIBILITY,       // bool*
+ 
+@@ -175,6 +178,11 @@ struct mp_frame_perf {
+     char desc[VO_PASS_PERF_MAX][VO_PASS_DESC_MAX_LEN];
+ };
+ 
++struct voctrl_android_native_dolby {
++    bool active, failed, decoder_failed;
++    int64_t frames, osd_updates;
++};
++
+ struct voctrl_performance_data {
+     struct mp_frame_perf fresh, redraw;
+ };
+@@ -540,6 +548,9 @@ bool vo_has_frame(struct vo *vo);
  void vo_redraw(struct vo *vo);
  bool vo_want_redraw(struct vo *vo);
  void vo_seek_reset(struct vo *vo);
@@ -2967,3 +3172,361 @@ index b6d69308da..9b4c3059f9 100644
      case VOCTRL_PERFORMANCE_DATA: {
          struct voctrl_performance_data *perf = data;
          copy_frame_info_to_mp(&p->perf_fresh, &perf->fresh, &p->hwdec.perf, &p->sw_upload_perf);
+diff --git a/video/out/vo_mediacodec_embed.c b/video/out/vo_mediacodec_embed.c
+index 985b52660f..b2ce6634be 100644
+--- a/video/out/vo_mediacodec_embed.c
++++ b/video/out/vo_mediacodec_embed.c
+@@ -18,8 +18,12 @@
+ #include <libavcodec/mediacodec.h>
+ #include <libavutil/hwcontext.h>
+ #include <libavutil/hwcontext_mediacodec.h>
++#include <android/native_window_jni.h>
++#include <string.h>
+ 
+ #include "common/common.h"
++#include "misc/jni.h"
++#include "sub/osd.h"
+ #include "vo.h"
+ #include "video/mp_image.h"
+ #include "video/hwdec.h"
+@@ -27,65 +31,226 @@
+ struct priv {
+     struct mp_image *next_image;
+     struct mp_hwdec_ctx hwctx;
++    jobject host;
++    jobject video_surface;
++    jmethodID geometry, visibility;
++    ANativeWindow *captions;
++    struct mp_osd_res osd;
++    int64_t osd_change;
++    int64_t submitted, osd_updates;
++    double last_pts;
++    bool failed, visible, paused, decoder_failed;
+ };
+ 
++static bool java_ok(struct vo *vo, JNIEnv *env)
++{
++    if (!(*env)->ExceptionCheck(env))
++        return true;
++    (*env)->ExceptionDescribe(env);
++    (*env)->ExceptionClear(env);
++    ((struct priv *)vo->priv)->failed = true;
++    MP_ERR(vo, "Native Dolby Vision Surface operation failed.\n");
++    return false;
++}
++
++static void visible(struct vo *vo, bool show)
++{
++    struct priv *p = vo->priv;
++    if (p->visible == show)
++        return;
++    JNIEnv *env = MP_JNI_GET_ENV(vo);
++    if (env && p->host && p->visibility) {
++        (*env)->CallVoidMethod(env, p->host, p->visibility, (jboolean)show);
++        if (java_ok(vo, env))
++            p->visible = show;
++    }
++}
++
++static bool init_host(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++    JNIEnv *env = MP_JNI_GET_ENV(vo);
++    if (!env || !vo->opts->android_native_dolby_surface)
++        return false;
++    p->host = (*env)->NewGlobalRef(env,
++                    (jobject)(intptr_t)vo->opts->android_native_dolby_surface);
++    if (!p->host)
++        return false;
++    jclass cls = (*env)->GetObjectClass(env, p->host);
++    jmethodID video = (*env)->GetMethodID(env, cls, "getVideoSurface", "()Landroid/view/Surface;");
++    jmethodID captions = (*env)->GetMethodID(env, cls, "getCaptionSurface", "()Landroid/view/Surface;");
++    p->geometry = (*env)->GetMethodID(env, cls, "setGeometry", "(IIIIIIIIIIIII)V");
++    p->visibility = (*env)->GetMethodID(env, cls, "setVisible", "(Z)V");
++    (*env)->DeleteLocalRef(env, cls);
++    if (!java_ok(vo, env) || !video || !captions || !p->geometry || !p->visibility)
++        return false;
++    jobject surface = (*env)->CallObjectMethod(env, p->host, video);
++    if (!java_ok(vo, env) || !surface)
++        return false;
++    p->video_surface = (*env)->NewGlobalRef(env, surface);
++    (*env)->DeleteLocalRef(env, surface);
++    surface = (*env)->CallObjectMethod(env, p->host, captions);
++    if (!java_ok(vo, env) || !surface)
++        return false;
++    p->captions = ANativeWindow_fromSurface(env, surface);
++    (*env)->DeleteLocalRef(env, surface);
++    if (!p->video_surface || !p->captions)
++        return false;
++    p->osd_change = -1;
++    return true;
++}
++
+ static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
+ {
++    struct priv *p = vo->priv;
+     AVBufferRef *device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_MEDIACODEC);
+     if (!device_ref)
+         return NULL;
+-
+     AVHWDeviceContext *ctx = (void *)device_ref->data;
+     AVMediaCodecDeviceContext *hwctx = ctx->hwctx;
+-    mp_assert(vo->opts->WinID != 0 && vo->opts->WinID != -1);
+-    hwctx->surface = (void *)(intptr_t)(vo->opts->WinID);
+-
+-    if (av_hwdevice_ctx_init(device_ref) < 0)
++    hwctx->surface = p->video_surface ? p->video_surface :
++                    (void *)(intptr_t)vo->opts->WinID;
++    if (!hwctx->surface || hwctx->surface == (void *)(intptr_t)-1 ||
++        av_hwdevice_ctx_init(device_ref) < 0)
+         av_buffer_unref(&device_ref);
+-
+     return device_ref;
+ }
+ 
+ static int preinit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
++    p->last_pts = MP_NOPTS_VALUE;
++    if (!strcmp(vo->driver->name, "android-native-dolby") &&
++        !vo->opts->android_native_dolby)
++        return -1;
++    if (vo->opts->android_native_dolby && !init_host(vo)) {
++        MP_ERR(vo, "Native Dolby Vision requires the video/caption Surface host.\n");
++        return -1;
++    }
+     vo->hwdec_devs = hwdec_devices_create();
+     p->hwctx = (struct mp_hwdec_ctx){
+         .driver_name = "mediacodec_embed",
+         .av_device_ref = create_mediacodec_device_ref(vo),
+         .hw_imgfmt = IMGFMT_MEDIACODEC,
+     };
+-
+-    if (!p->hwctx.av_device_ref) {
+-        MP_VERBOSE(vo, "Failed to create hwdevice_ctx\n");
++    if (!p->hwctx.av_device_ref)
+         return -1;
+-    }
+-
+     hwdec_devices_add(vo->hwdec_devs, &p->hwctx);
+     return 0;
+ }
+ 
++static void update_geometry(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++    if (!p->host || !vo->params)
++        return;
++    int w = vo->opts->android_surface_size.w;
++    int h = vo->opts->android_surface_size.h;
++    if (w <= 0 || h <= 0)
++        return;
++    vo->dwidth = w;
++    vo->dheight = h;
++    struct mp_rect src, dst;
++    vo_get_src_dst_rects(vo, &src, &dst, &p->osd);
++    // mpv's crop is in rotated image space; SurfaceControl expects buffer space.
++    mp_rect_rotate(&src, vo->params->w, vo->params->h,
++                   (360 - vo->params->rotate) % 360);
++    JNIEnv *env = MP_JNI_GET_ENV(vo);
++    if (!env)
++        return;
++    (*env)->CallVoidMethod(env, p->host, p->geometry,
++        src.x0, src.y0, src.x1, src.y1, dst.x0, dst.y0, dst.x1, dst.y1,
++        vo->params->rotate, w, h, vo->params->w, vo->params->h);
++    java_ok(vo, env);
++    if (ANativeWindow_setBuffersGeometry(p->captions, w, h, WINDOW_FORMAT_RGBA_8888) < 0)
++        p->failed = true;
++    p->osd_change = -1;
++    vo_event(vo, VO_EVENT_RESIZE);
++}
++
++/* Premultiplied BGRA subtitles stay on their own SDR layer. Never paint them
++ * into Dolby decoder buffers or replace the decoder's dynamic metadata. */
++static void draw_captions(struct vo *vo, double pts)
++{
++    struct priv *p = vo->priv;
++    if (!p->captions || p->osd.w <= 0 || p->osd.h <= 0)
++        return;
++    const bool formats[SUBBITMAP_COUNT] = {[SUBBITMAP_BGRA] = true};
++    struct sub_bitmap_list *list = osd_render(vo->osd, p->osd, pts, 0, formats);
++    if (list->change_id == p->osd_change) {
++        talloc_free(list);
++        return;
++    }
++    ANativeWindow_Buffer buffer;
++    if (ANativeWindow_lock(p->captions, &buffer, NULL) < 0) {
++        p->failed = true;
++        talloc_free(list);
++        return;
++    }
++    for (int y = 0; y < buffer.height; y++)
++        memset((uint8_t *)buffer.bits + y * buffer.stride * 4, 0, buffer.width * 4);
++    for (int i = 0; i < list->num_items; i++) {
++        struct sub_bitmaps *images = list->items[i];
++        for (int j = 0; j < images->num_parts; j++) {
++            struct sub_bitmap *b = &images->parts[j];
++            if (b->w <= 0 || b->h <= 0 || b->dw <= 0 || b->dh <= 0)
++                continue;
++            for (int y = MPMAX(0, b->y); y < MPMIN(buffer.height, b->y + b->dh); y++) {
++                int sy = (int64_t)(y - b->y) * b->h / b->dh;
++                const uint8_t *row = (uint8_t *)b->bitmap + sy * b->stride;
++                uint8_t *dest = (uint8_t *)buffer.bits + y * buffer.stride * 4;
++                for (int x = MPMAX(0, b->x); x < MPMIN(buffer.width, b->x + b->dw); x++) {
++                    int sx = (int64_t)(x - b->x) * b->w / b->dw;
++                    const uint8_t *s = row + sx * 4;
++                    uint8_t *d = dest + x * 4;
++                    int inverse = 255 - s[3];
++                    d[0] = s[2] + (d[0] * inverse + 127) / 255;
++                    d[1] = s[1] + (d[1] * inverse + 127) / 255;
++                    d[2] = s[0] + (d[2] * inverse + 127) / 255;
++                    d[3] = s[3] + (d[3] * inverse + 127) / 255;
++                }
++            }
++        }
++    }
++    if (ANativeWindow_unlockAndPost(p->captions) < 0) {
++        p->failed = true;
++    } else {
++        p->osd_change = list->change_id;
++        p->osd_updates++;
++    }
++    talloc_free(list);
++}
++
+ static void flip_page(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+     if (!p->next_image)
+         return;
+-
+     AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)p->next_image->planes[3];
+-    av_mediacodec_release_buffer(buffer, 1);
++    if (!buffer) {
++        p->failed = true;
++        mp_image_unrefp(&p->next_image);
++        return;
++    }
++    if (av_mediacodec_release_buffer(buffer, 1) < 0)
++        p->failed = true;
++    else {
++        p->submitted++;
++        visible(vo, true);
++    }
+     mp_image_unrefp(&p->next_image);
+ }
+ 
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     struct priv *p = vo->priv;
+-
+-    mp_image_t *mpi = NULL;
++    mp_image_unrefp(&p->next_image);
+     if (!frame->redraw && !frame->repeat)
+-        mpi = mp_image_new_ref(frame->current);
+-
+-    talloc_free(p->next_image);
+-    p->next_image = mpi;
++        p->next_image = mp_image_new_ref(frame->current);
++    if (frame->current)
++        p->last_pts = frame->current->pts;
++    if (p->last_pts != MP_NOPTS_VALUE)
++        draw_captions(vo, p->last_pts);
+     return VO_TRUE;
+ }
+ 
+@@ -96,21 +261,74 @@ static int query_format(struct vo *vo, int format)
+ 
+ static int control(struct vo *vo, uint32_t request, void *data)
+ {
++    struct priv *p = vo->priv;
++    switch (request) {
++    case VOCTRL_PREPARE_DECODER_UNINIT:
++        if (!p->host)
++            return VO_NOTIMPL;
++        mp_image_unrefp(&p->next_image);
++        p->last_pts = MP_NOPTS_VALUE;
++        return VO_TRUE;
++    case VOCTRL_ANDROID_NATIVE_DOLBY_DECODER_FAILED:
++        p->decoder_failed = true;
++        return VO_TRUE;
++    case VOCTRL_PAUSE:
++        p->paused = true;
++        return VO_TRUE;
++    case VOCTRL_RESUME:
++        p->paused = false;
++        return VO_TRUE;
++    case VOCTRL_CHECK_EVENTS:
++        // NORETAIN forbids re-submitting a MediaCodec buffer. Captions can
++        // still redraw independently at the last video PTS while paused.
++        if (p->paused && p->last_pts != MP_NOPTS_VALUE)
++            draw_captions(vo, p->last_pts);
++        return VO_TRUE;
++    case VOCTRL_EXTERNAL_RESIZE:
++    case VOCTRL_SET_PANSCAN:
++    case VOCTRL_VO_OPTS_CHANGED:
++        update_geometry(vo);
++        vo->want_redraw = true;
++        return VO_TRUE;
++    case VOCTRL_GET_ANDROID_NATIVE_DOLBY:
++        *(struct voctrl_android_native_dolby *)data = (struct voctrl_android_native_dolby){
++            .active = p->host && p->submitted > 0 && !p->failed && !p->decoder_failed,
++            .failed = p->failed,
++            .decoder_failed = p->decoder_failed,
++            .frames = p->submitted,
++            .osd_updates = p->osd_updates,
++        };
++        return VO_TRUE;
++    case VOCTRL_RESET:
++        mp_image_unrefp(&p->next_image);
++        p->last_pts = MP_NOPTS_VALUE;
++        p->osd_change = -1;
++        return VO_TRUE;
++    }
+     return VO_NOTIMPL;
+ }
+ 
+ static int reconfig(struct vo *vo, struct mp_image_params *params)
+ {
++    update_geometry(vo);
+     return 0;
+ }
+ 
+ static void uninit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
++    visible(vo, false);
+     mp_image_unrefp(&p->next_image);
+-
+-    hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
++    if (vo->hwdec_devs && p->hwctx.av_device_ref)
++        hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
+     av_buffer_unref(&p->hwctx.av_device_ref);
++    if (p->captions)
++        ANativeWindow_release(p->captions);
++    JNIEnv *env = MP_JNI_GET_ENV(vo);
++    if (env) {
++        if (p->video_surface) (*env)->DeleteGlobalRef(env, p->video_surface);
++        if (p->host) (*env)->DeleteGlobalRef(env, p->host);
++    }
+ }
+ 
+ const struct vo_driver video_out_mediacodec_embed = {
+@@ -126,3 +344,17 @@ const struct vo_driver video_out_mediacodec_embed = {
+     .uninit = uninit,
+     .priv_size = sizeof(struct priv),
+ };
++
++const struct vo_driver video_out_android_native_dolby = {
++    .description = "Android native Dolby Vision with a separate caption Surface",
++    .name = "android-native-dolby",
++    .caps = VO_CAP_NORETAIN | VO_CAP_ROTATE90,
++    .preinit = preinit,
++    .query_format = query_format,
++    .control = control,
++    .draw_frame = draw_frame,
++    .flip_page = flip_page,
++    .reconfig = reconfig,
++    .uninit = uninit,
++    .priv_size = sizeof(struct priv),
++};

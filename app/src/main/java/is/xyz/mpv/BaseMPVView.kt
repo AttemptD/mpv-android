@@ -1,6 +1,7 @@
 package `is`.xyz.mpv
 
 import android.content.Context
+import android.os.Build
 import android.util.AttributeSet
 import android.util.Log
 import android.view.SurfaceHolder
@@ -82,7 +83,15 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.w(TAG, "attaching surface")
-        MPVLib.attachSurface(holder.surface)
+        MPVLib.attachSurfaceForPlayback(holder.surface)
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                MPVLib.attachNativeDolbySurface(NativeDolbySurface.create(this))
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Native Dolby Surface host unavailable", error)
+            }
+        }
+        MPVLib.setPropertyString("android-surface-size", "${width}x$height")
         // This forces mpv to render subs/osd/whatever into our surface even if it would ordinarily not
         MPVLib.setOptionString("force-window", "yes")
 
@@ -103,6 +112,7 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
         // is done using the surface.
         // FIXME: There could be a race condition here, because I don't think
         // setting a property will wait for VO deinit.
+        MPVLib.attachNativeDolbySurface(null)
         MPVLib.detachSurface()
     }
 

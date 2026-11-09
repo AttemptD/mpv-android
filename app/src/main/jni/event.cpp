@@ -5,6 +5,7 @@
 #include "globals.h"
 #include "jni_utils.h"
 #include "log.h"
+#include "render.h"
 
 static void sendPropertyUpdateToJava(JNIEnv *env, mpv_event_property *prop)
 {
@@ -106,6 +107,12 @@ void *event_thread(void *arg)
             sendEventToJava(env, mp_event->event_id);
             break;
         }
+        case MPV_EVENT_SET_PROPERTY_REPLY:
+            if (handle_surface_reply(env, mp_event->reply_userdata, mp_event->error))
+                break;
+            if (mp_event->error < 0)
+                ALOGE("async property update failed: %s", mpv_error_string(mp_event->error));
+            break;
         default:
             ALOGV("event: %s\n", mpv_event_name(mp_event->event_id));
             sendEventToJava(env, mp_event->event_id);

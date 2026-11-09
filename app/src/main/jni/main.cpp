@@ -16,6 +16,7 @@ extern "C" {
 #include "log.h"
 #include "jni_utils.h"
 #include "event.h"
+#include "render.h"
 
 #define ARRAYLEN(a) (sizeof(a)/sizeof(a[0]))
 
@@ -94,6 +95,12 @@ jni_func(void, destroy) {
 
     mpv_terminate_destroy(g_mpv);
     g_mpv = NULL;
+    release_surface_references(env);
+    if (global_appctx) {
+        av_jni_set_android_app_ctx(NULL, NULL);
+        env->DeleteGlobalRef(global_appctx);
+        global_appctx = NULL;
+    }
 }
 
 jni_func(void, command, jobjectArray jarray) {

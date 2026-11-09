@@ -1,0 +1,70 @@
+Android MPV 原生 Dolby Vision P5/P8（2026-11-09）
+
+实现
+核心分支：AttemptD/mpv / codex/android-native-dolby
+核心提交：18520fd59582feed78cbceaf55626d36f059f84b
+官方基线：d9d402dc07d02c9aa178fb3e33adc390fa2785cc
+FFmpeg 基线：d32b387f2b0a484599d4587d651891f0c63c4238
+libplacebo：v7.387.0 / 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+Android 10 / API 29 起，显示器与硬件解码器都声明对应杜比能力时，
+手机端 Auto/HW+ 自动选择原生 P5/P8。系统解码器使用 video/dolby-vision，
+视频输出为 android-native-dolby，保留不透明解码缓冲区及逐帧动态元数据。
+音频、时钟、寻址、音轨和字幕仍由同一个 MPV 实例控制。
+字幕/OSD 使用独立透明 SDR Surface；暂停时重绘字幕不会再次提交视频缓冲区。
+裁剪、宽高比、缩放及 90 度旋转使用 SurfaceControl 几何变换。
+显式同步视频与字幕的默认缓冲区尺寸，避免新版本 Android 的 BLAST 队列
+把生产者图像缩进初始 1x1 占位区域。
+
+显式 HW（copy-back）、SW、像素滤镜或 shader 使用既有 GPU 路径。
+无杜比能力的设备继续使用 HDR10/SDR 映射。会员门槛沿用现有策略。
+P7/MEL/FEL 保持原有 GPU 合成；本次没有把 P7 丢 EL 后冒充完整原生输出。
+原生模式不提供 gpu-next 的 shader、视频滤镜或帧截图功能；需要这些功能时
+使用 HW/SW 模式。常规截图依赖当前 VO 的帧保留能力。
+
+失败与生命周期
+原生解码初始化或呈现失败会触发一次回退，重新选择视频轨并保留位置、暂停、
+音轨、字幕及后续播放列表；当前文件不反复尝试失败路径，新文件重新判断。
+过期恢复回调不替换用户新选的文件。解码失败但音频仍能播放时也能恢复视频。
+原生路径初始化失败直接通知宿主，不进入只允许 Surface 时的无限软件重试。
+若失败视频轨先于 VO 状态通知被取消选择，按 vid=no / options/vid=auto
+恢复原视频轨；用户主动设置 vid=no 时保持其选择。
+Surface 及 Java 主控对象由 JNI 持有，旧 VO 停止及属性完成后才释放。
+暂停重建输出前保存绝对位置，并阻止旧 GOP 数据被新解码器提前消费。
+
+验证
+OPPO PKX110 / Android 17：实际选中 c2.qti.dv.decoder。
+P5 为本地 4K24、带 AAC 音频的 30 秒片段；验证了时钟推进、独立黄色 ASS、
+暂停定位、暂停字幕显隐、HW/HW+ 往返、P8 定位与 Surface 重建、SDR 恢复。
+补充屏幕合成截图中的黄色字幕与中央视频像素检查，覆盖图层尺寸错误。
+系统合成器记录 P5 视频层为 BT2020_PQ、DEVICE 合成，尺寸 2640x1111；
+字幕层为独立 V0_SRGB、2640x1216。厂商最终杜比显示模式仍由设备系统决定。
+P8.4 使用 AndroidX Media3 的 dolbyVision-hdr.MOV，原始 720p30、3 帧，
+保留旋转与 RPU 后循环为测试片段；仅用于兼容与生命周期检查。
+公共素材 Git blob：d8b8e826b5b3446b0984f7b3b89eea2e69680293。
+三星 SM-S9110 / Android 17：实际不声明杜比能力。独立测试故意强制尝试
+不支持的解码器，验证一次回退后恢复画面并保留 12 秒、暂停和播放列表。
+Lua 策略 32 项断言通过。四个 ABI 编译并检查动态依赖与 ELF 对齐。
+上述为短片与自动检查，未做全片、温控、所有 P8 变体或所有机型的验证。
+AfuseKtV 前端本轮未接入；当前盒子的显示链路没有报告 Dolby Vision。
+正式 AfuseKt App 没有被测试包替换。
+
+构建与测试
+mpv-android/buildscripts/include/depinfo.sh 固定上述源码提交。
+FFmpeg 与 libplacebo 的完整补丁通过 apply_pinned_patch 幂等重放。
+在已准备依赖的 mpv-android 中，对 arm64、armv7l、x86、x86_64 分别执行：
+  cores=8 MPV_ANDROID_NDK=/path/to/android-ndk-r29 \
+    bash buildscripts/buildAfusekt.sh -n --arch ARCH libplacebo
+  同样构建 ffmpeg、mpv，再使用 AfuseKt/mpv/src/main/jni/Android.mk 构建 JNI。
+本轮使用现有 NDK r29 和依赖缓存；没有执行清空缓存的全依赖冷构建。
+  lua app/src/test/lua/NativeDolbyPolicyTest.lua .
+  ./gradlew :mpv:assembleDebugAndroidTest
+测试 APK 为独立 is.xyz.mpv.test；测试源码在 mpv/src/androidTest/。
+可用 -PmpvNativeLibsDir=/absolute/path/to/libs 指定独立验证用的完整 so 目录。
+库源与二进制必须成套更新；最终每库 SHA-256 记录在 mpv/native-dolby-build.json。
+测试媒体与本地日志不上传 GitHub。
+
+以后同步
+在核心 codex/android-native-dolby 合并 upstream/master 并验证，推送核心，
+再更新构建仓库中的 v_mpv 和差异导出，最后重建应用的四架构库。
+Apple codex/apple 与原 Android codex/afuse 保留，未修改它们的分支引用。
