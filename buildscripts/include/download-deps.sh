@@ -126,7 +126,7 @@ if [ ! -d mpv ]; then
 	git -C mpv checkout --detach "$v_mpv"
 fi
 
-# Complete, pinned exports include SMB, RPU mapping and native Dolby decoding.
+# Complete pinned exports include SMB, RPU mapping and native Dolby/HDR decoding.
 # Reverse checks preserve an already prepared local tree without applying twice.
 PATCHROOT="$(cd .. && pwd)/patches"
 apply_pinned_patch ffmpeg "$v_ffmpeg" "$PATCHROOT/ffmpeg-upstream-20261109.patch"

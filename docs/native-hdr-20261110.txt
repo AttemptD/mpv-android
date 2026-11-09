@@ -1,0 +1,71 @@
+Android MPV HDR10/HLG 原生 Surface 与 P8 兼容回退（2026-11-10）
+
+源码
+核心：AttemptD/mpv，codex/android-native-dolby
+提交：f12421e85ae06a821a6ccaf53680b41fc155d204
+官方基线：d9d402dc07d02c9aa178fb3e33adc390fa2785cc
+FFmpeg 基线：d32b387f2b0a484599d4587d651891f0c63c4238
+FFmpeg 完整差异：buildscripts/patches/ffmpeg-upstream-20261109.patch
+libplacebo：275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+输出策略
+AfuseKt 会员、Android API 29 起，Auto/HW+、无像素滤镜或 shader 时，
+分别检查当前显示模式与硬件解码器的 Dolby、PQ、HLG 能力。
+HLG 不依赖显示器是否支持 HDR10/PQ；Dolby 能力也不冒充 PQ/HLG 能力。
+HEVC Main10、VP9 10/12-bit profile、AV1 Main10 硬件解码器按编码类型匹配。
+媒体最终能否由硬件解码仍由 MediaCodec 决定，不匹配或初始化失败会回退。
+
+内容                     首选路径                  兼容/失败路径
+HDR10/PQ                 原生 PQ Surface            现有 GPU HDR/SDR
+HLG                      原生 HLG Surface           现有 GPU 转 PQ/SDR
+P5                       既有原生 Dolby             既有 P5 GPU 映射
+P8 + CCID 1              原生 Dolby                 原生 HDR10/PQ，再 GPU
+P8 + CCID 4              原生 Dolby                 原生 HLG，再 GPU
+其他 P8 兼容 ID          既有原生 Dolby             既有 GPU 路径，不猜测 BL
+P7/MEL/FEL               既有 GPU 合成              原有性能策略
+SDR                      用户原有 GPU 渲染器        不启用原生 HDR
+
+若设备从一开始就不支持对应 Dolby profile，直接选择匹配的 P8 HDR 基层。
+显式 HW（copy-back）、SW、滤镜和 shader 继续使用 GPU；会员权限保持原样。
+原生输出无需用户另外打开 gpu-next。需要 GPU 映射时由现有策略选择渲染器。
+HLG 片源遇到仅支持 PQ 的显示器，继续使用现有 GPU 转换，不错误标记成 PQ 直出。
+HDR10+ 在此按兼容 PQ 信号处理，没有新增跨设备动态元数据直出的保证。
+
+实现
+新增 vo=android-native-hdr、android-native-hdr=no/pq/hlg 及状态属性。
+与原生 Dolby 共用 Java SurfaceControl 主控和独立 SDR 字幕层，复用现有 JNI。
+普通 HEVC/VP9/AV1 解码器向 Surface 提交不透明缓冲，不经过 libplacebo 映射。
+MediaFormat 明确设置色域、传递函数、范围及可用的 HDR 静态元数据。
+HEVC 配置读取 SPS VUI，兼容容器在第一帧前尚未提供传递函数的情况。
+解码器报告的输出传递函数与请求不符时，拒绝继续伪装原生 HDR。
+
+将 Dolby BL compatibility ID 从容器配置传递到 track/current-track 属性。
+P8 HDR 基层仅允许 CCID 1/PQ、4/HLG、BL 存在且无 EL 的组合。
+HDR 回退使用普通 HEVC MIME；剥离 type 62 RPU NAL，保留原始图像 NAL，
+不转码图像，不把已处理 Dolby 像素再次当作 HDR 基层。
+P5/P7 或未知兼容性不会进入这条剥离路径。
+
+共享 Surface 的旋转修正
+系统旧 setGeometry 的原生实现使用 buffer transform 位标记，且缩放后的
+旋转原点需显式修正。修复原有 90 度片源被镜像及偏移的问题。
+实际 P8.4 视频层应旋转并居中；新增屏幕中央视频像素回归检查。
+实现依据的 AOSP 原生入口：
+https://android.googlesource.com/platform/frameworks/native/+/85b74b7e07/libs/gui/SurfaceComposerClient.cpp
+
+失败恢复
+每文件分别记录 Dolby 与 HDR 失败，最多各尝试一次。
+P8 可按 Dolby → 兼容原生 HDR → GPU 顺序恢复，下一文件重新判断。
+切换输出前保存视频/音频/字幕轨、位置、暂停及播放列表条目 ID。
+mpv 0.42 的 loadfile play 标志只启动空闲播放器，因此插入重试条目后
+显式 playlist-play-index；重试 on_load 后再删除旧条目，避免跳到下一文件。
+无音轨文件在 file-loaded 前初始化失败时，vid 仍可能报告 auto；按实际选中
+轨是否消失识别失败，并在 on_unload 钩子内执行待重试命令，避免自动跳入下一项。
+重试期间保留 recoverable 标记，避免 App 将旧输出的错误提前当成最终失败。
+保留原有 Surface 重建、暂停定位、帧看门狗和过期恢复回调保护。
+
+构建与验证记录见 AfuseKt/docs/mpv-native-hdr-20261110.txt。
+构建端 v_mpv 与导出差异固定到以上提交；FFmpeg 完整补丁在全新基线重放后
+逐文件一致，缓存中的依赖准备脚本连续执行两次可幂等通过。
+使用已有 NDK r29/依赖缓存重建四个 ABI；本轮未执行全依赖冷构建。
+库清单、文件大小、SHA-256、ELF LOAD 对齐与 FFmpeg 补丁摘要记录在
+AfuseKt/mpv/native-dolby-build.json。后续同步官方时需同步重建整套交付库。

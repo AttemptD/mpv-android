@@ -10,7 +10,7 @@ import android.view.SurfaceControl;
 import android.view.SurfaceView;
 import androidx.annotation.Keep;
 
-/** Separate compositor layers preserve the decoder's Dolby metadata and SDR captions. */
+/** Separate native HDR/Dolby video and SDR caption layers preserve decoder output. */
 @Keep
 @TargetApi(29)
 public final class NativeDolbySurface {
@@ -68,6 +68,29 @@ public final class NativeDolbySurface {
                 sx1 <= sx0 || sy1 <= sy0 || dx1 <= dx0 || dy1 <= dy0)
             throw new IllegalArgumentException("Invalid native Dolby geometry");
         Rect screen = new Rect(0, 0, width, height);
+        int angle = (rotation % 360 + 360) % 360;
+        boolean swap = angle == 90 || angle == 270;
+        int dw = dx1 - dx0, dh = dy1 - dy0;
+        int sw = sx1 - sx0, sh = sy1 - sy0;
+        int frameWidth = swap ? Math.round((float)dw * sw / sh) : dw;
+        int frameHeight = swap ? Math.round((float)dh * sh / sw) : dh;
+        float xs = (float)frameWidth / sw, ys = (float)frameHeight / sh;
+        float x = dx0 - xs * sx0, y = dy0 - ys * sy0;
+        // The native setGeometry implementation consumes buffer transform bits,
+        // not Surface.ROTATION_* ordinals. Its rotation offsets are unscaled;
+        // supply the rotated scale and then set the correct crop translation.
+        // Its matrix arguments also reverse the direction of the quarter turns.
+        int transform = 0;
+        if (angle == 90) {
+            transform = 7; // NATIVE_WINDOW_TRANSFORM_ROT_270
+            x = dx0 + xs * sy1; y = dy0 - ys * sx0;
+        } else if (angle == 180) {
+            transform = 3; // NATIVE_WINDOW_TRANSFORM_ROT_180
+            x = dx0 + xs * sx1; y = dy0 + ys * sy1;
+        } else if (angle == 270) {
+            transform = 4; // NATIVE_WINDOW_TRANSFORM_ROT_90
+            x = dx0 - xs * sy0; y = dy0 + ys * sx1;
+        }
         try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
             // Surface(SurfaceControl) uses a child BLAST queue on newer Android.
             // Its default size must match the producer, or it first scales each
@@ -76,7 +99,8 @@ public final class NativeDolbySurface {
                     .setBufferSize(captionControl, width, height)
                     .setGeometry(backgroundControl, new Rect(0, 0, 1, 1), screen, Surface.ROTATION_0)
                     .setGeometry(videoControl, new Rect(sx0, sy0, sx1, sy1),
-                            new Rect(dx0, dy0, dx1, dy1), ((rotation % 360 + 360) % 360) / 90)
+                            new Rect(0, 0, frameWidth, frameHeight), transform)
+                    .setPosition(videoControl, x, y)
                     .setGeometry(captionControl, screen, screen, Surface.ROTATION_0).apply();
         }
     }

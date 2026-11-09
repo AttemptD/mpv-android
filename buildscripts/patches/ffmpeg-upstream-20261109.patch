@@ -36,10 +36,17 @@ index 374bd5c..3772467 100755
  enabled libsoxr           && require libsoxr soxr.h soxr_create -lsoxr
  enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/sftp.h sftp_init
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..e6a07bb 100644
+index bc176d8..4bfe357 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -36,8 +36,11 @@
+@@ -30,14 +30,18 @@
+ #include "libavutil/mem.h"
+ #include "libavutil/opt.h"
+ #include "libavutil/intreadwrite.h"
++#include "libavutil/mastering_display_metadata.h"
+ #include "libavutil/pixfmt.h"
+ #include "libavutil/internal.h"
+ 
  #include "avcodec.h"
  #include "codec_internal.h"
  #include "decode.h"
@@ -51,7 +58,7 @@ index bc176d8..e6a07bb 100644
  #include "hevc/parse.h"
  #include "hwconfig.h"
  #include "internal.h"
-@@ -45,6 +48,14 @@
+@@ -45,6 +49,14 @@
  #include "mediacodec_wrapper.h"
  #include "mediacodecdec_common.h"
  
@@ -66,11 +73,12 @@ index bc176d8..e6a07bb 100644
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -59,8 +70,219 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,8 +71,220 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
 +    int native_dolby_vision;
++    int native_hdr_output;
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    /* MediaCodec does not parse HEVC Dolby Vision NAL units itself. Keep a
@@ -286,7 +294,7 @@ index bc176d8..e6a07bb 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -70,6 +292,12 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -70,6 +294,12 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -299,7 +307,153 @@ index bc176d8..e6a07bb 100644
      return 0;
  }
  
-@@ -315,6 +543,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -245,6 +475,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+ 
+         avctx->profile = sps->ptl.general_ptl.profile_idc;
+         avctx->level   = sps->ptl.general_ptl.level_idc;
++        if (((MediaCodecH264DecContext *)avctx->priv_data)->native_hdr_output && sps->vui_present) {
++            const H2645VUI *vui = &sps->vui.common;
++            if (vui->colour_description_present_flag) {
++                avctx->color_primaries = vui->colour_primaries;
++                avctx->color_trc = vui->transfer_characteristics;
++                avctx->colorspace = vui->matrix_coeffs;
++            }
++            if (vui->video_signal_type_present_flag)
++                avctx->color_range = vui->video_full_range_flag ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
++        }
+ 
+         if ((ret = h2645_ps_to_nalu(vps->data, vps->data_size, &vps_data, &vps_data_size)) < 0 ||
+             (ret = h2645_ps_to_nalu(sps->data, sps->data_size, &sps_data, &sps_data_size)) < 0 ||
+@@ -305,6 +545,128 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+ }
+ #endif
+ 
++/* This output mode presents the compatible HDR base signal, not Dolby-processed
++ * pixels. Keep its transfer and static metadata explicit on the codec Surface. */
++static int mediacodec_set_native_hdr(AVCodecContext *avctx,
++                                    MediaCodecH264DecContext *s,
++                                    FFAMediaFormat *format)
++{
++    uint8_t hdr[25] = {0};
++    int have_hdr = 0;
++    const AVPacketSideData *sd;
++    if (s->native_hdr_output != AVCOL_TRC_SMPTEST2084 &&
++        s->native_hdr_output != AVCOL_TRC_ARIB_STD_B67)
++        return AVERROR(EINVAL);
++    if (avctx->color_trc == AVCOL_TRC_UNSPECIFIED)
++        avctx->color_trc = s->native_hdr_output;
++    if (s->native_dolby_vision || avctx->color_trc != s->native_hdr_output) {
++        av_log(avctx, AV_LOG_ERROR, "Native HDR input transfer %d does not match requested %d\n",
++               avctx->color_trc, s->native_hdr_output);
++        return AVERROR(EINVAL);
++    }
++#if CONFIG_HEVC_MEDIACODEC_DECODER
++    if (avctx->codec_id == AV_CODEC_ID_HEVC && s->dovi_ctx.cfg.dv_profile) {
++        const AVDOVIDecoderConfigurationRecord *cfg = &s->dovi_ctx.cfg;
++        if (cfg->dv_profile != 8 || cfg->el_present_flag || !cfg->bl_present_flag ||
++            cfg->dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4)) {
++            av_log(avctx, AV_LOG_ERROR, "Native HDR requires a compatible P8 base layer\n");
++            return AVERROR(EINVAL);
++        }
++        avctx->profile = AV_PROFILE_HEVC_MAIN_10;
++    }
++#endif
++    ff_AMediaFormat_setInt32(format, "color-transfer",
++        ff_AMediaFormatColorTransfer_from_AVColorTransfer(avctx->color_trc));
++    if (avctx->color_primaries == AVCOL_PRI_BT2020)
++        ff_AMediaFormat_setInt32(format, "color-standard", 6);
++    else if (avctx->color_primaries == AVCOL_PRI_BT709)
++        ff_AMediaFormat_setInt32(format, "color-standard", 1);
++    if (avctx->color_range != AVCOL_RANGE_UNSPECIFIED)
++        ff_AMediaFormat_setInt32(format, "color-range",
++            ff_AMediaFormatColorRange_from_AVColorRange(avctx->color_range));
++    sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
++    if (sd && sd->size >= sizeof(AVMasteringDisplayMetadata)) {
++        const AVMasteringDisplayMetadata *md = (const void *)sd->data;
++        if (md->has_primaries) {
++            for (int i = 0; i < 3; i++)
++                for (int j = 0; j < 2; j++)
++                    AV_WL16(hdr + 1 + 4*i + 2*j,
++                        lrint(av_clipd(av_q2d(md->display_primaries[i][j])*50000, 0, 65535)));
++            for (int j = 0; j < 2; j++)
++                AV_WL16(hdr + 13 + 2*j,
++                    lrint(av_clipd(av_q2d(md->white_point[j])*50000, 0, 65535)));
++        }
++        if (md->has_luminance) {
++            AV_WL16(hdr + 17, lrint(av_clipd(av_q2d(md->max_luminance), 0, 65535)));
++            AV_WL16(hdr + 19, lrint(av_clipd(av_q2d(md->min_luminance)*10000, 0, 65535)));
++        }
++        have_hdr = md->has_primaries || md->has_luminance;
++    }
++    sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_CONTENT_LIGHT_LEVEL);
++    if (sd && sd->size >= sizeof(AVContentLightMetadata)) {
++        const AVContentLightMetadata *cl = (const void *)sd->data;
++        AV_WL16(hdr + 21, FFMIN(cl->MaxCLL, 65535));
++        AV_WL16(hdr + 23, FFMIN(cl->MaxFALL, 65535));
++        have_hdr = 1;
++    }
++    if (have_hdr)
++        ff_AMediaFormat_setBuffer(format, "hdr-static-info", hdr, sizeof(hdr));
++    av_log(avctx, AV_LOG_INFO, "Native HDR Surface requested: %s\n",
++           s->native_hdr_output == 16 ? "HDR10/PQ" : "HLG");
++    return 0;
++}
++
++#if CONFIG_HEVC_MEDIACODEC_DECODER
++static int mediacodec_hdr_base_packet(AVCodecContext *avctx,
++                                      MediaCodecH264DecContext *s, AVPacket *pkt)
++{
++    AVPacket base = {0};
++    int ret, bytes = 0, removed = 0;
++    mediacodec_dovi_update_config(avctx, s, pkt);
++    if (!s->dovi_ctx.cfg.dv_profile)
++        return 0;
++    if (s->dovi_ctx.cfg.dv_profile != 8 || s->dovi_ctx.cfg.el_present_flag ||
++        s->dovi_ctx.cfg.dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4))
++        return AVERROR_INVALIDDATA;
++    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx, 4,
++                               AV_CODEC_ID_HEVC, H2645_FLAG_SMALL_PADDING);
++    if (ret < 0)
++        return ret;
++    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
++        H2645NAL *n = &s->dovi_pkt.nals[i];
++        if (n->nuh_layer_id)
++            return AVERROR_INVALIDDATA;
++        if (n->type == 62) { removed++; continue; }
++        if (n->raw_size > INT_MAX - bytes - 4)
++            return AVERROR(ENOMEM);
++        bytes += 4 + n->raw_size;
++    }
++    if (!removed)
++        return 0;
++    if ((ret = av_new_packet(&base, bytes)) < 0)
++        return ret;
++    if ((ret = av_packet_copy_props(&base, pkt)) < 0) {
++        av_packet_unref(&base);
++        return ret;
++    }
++    bytes = 0;
++    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
++        H2645NAL *n = &s->dovi_pkt.nals[i];
++        if (n->type == 62) continue;
++        AV_WB32(base.data + bytes, 1);
++        memcpy(base.data + bytes + 4, n->raw_data, n->raw_size);
++        bytes += 4 + n->raw_size;
++    }
++    av_packet_unref(pkt);
++    av_packet_move_ref(pkt, &base);
++    if (!s->dovi_metadata_logged) {
++        av_log(avctx, AV_LOG_INFO, "P8 native HDR: removed Dolby RPU NAL units; compatible base video retained\n");
++        s->dovi_metadata_logged = 1;
++    }
++    return 0;
++}
++#endif
++
+ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+ {
+     int ret;
+@@ -315,6 +677,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
  
@@ -312,7 +466,7 @@ index bc176d8..e6a07bb 100644
      if (s->use_ndk_codec < 0)
          s->use_ndk_codec = !av_jni_get_java_vm(avctx);
  
-@@ -351,6 +585,25 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -351,6 +719,25 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
          ret = hevc_set_extradata(avctx, format);
          if (ret < 0)
              goto done;
@@ -338,7 +492,17 @@ index bc176d8..e6a07bb 100644
          break;
  #endif
  #if CONFIG_MPEG2_MEDIACODEC_DECODER
-@@ -486,6 +739,23 @@ done:
+@@ -430,6 +817,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     }
+ 
+     ff_AMediaFormat_setString(format, "mime", codec_mime);
++    if (s->native_hdr_output &&
++        (ret = mediacodec_set_native_hdr(avctx, s, format)) < 0)
++        goto done;
+ 
+     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+         ff_AMediaFormat_setInt32(format, "width", avctx->width);
+@@ -486,6 +876,28 @@ done:
      return ret;
  }
  
@@ -347,9 +511,14 @@ index bc176d8..e6a07bb 100644
 +                                     AVFrame *frame, bool wait)
 +{
 +    int ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, wait);
++    if (ret >= 0 && s->native_hdr_output && avctx->color_trc != s->native_hdr_output) {
++        av_log(avctx, AV_LOG_ERROR, "Native HDR decoder changed the requested transfer\n");
++        av_frame_unref(frame);
++        return AVERROR_EXTERNAL;
++    }
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
-+    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC) {
++    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC && !s->native_hdr_output) {
 +        ret = mediacodec_dovi_attach(avctx, s, frame);
 +        if (ret < 0)
 +            av_frame_unref(frame);
@@ -362,7 +531,7 @@ index bc176d8..e6a07bb 100644
  static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -501,7 +771,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -501,7 +913,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
      }
  
      /* poll for new frame */
@@ -371,7 +540,7 @@ index bc176d8..e6a07bb 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -512,7 +782,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -512,7 +924,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
              if (index < 0) {
                  /* no space, block for an output frame to appear */
@@ -380,7 +549,7 @@ index bc176d8..e6a07bb 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -558,12 +828,18 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -558,12 +970,20 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
              if (ret < 0)
                  return ret;
@@ -394,14 +563,16 @@ index bc176d8..e6a07bb 100644
          }
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
-+        ret = mediacodec_dovi_parse_packet(avctx, s, &s->buffered_pkt);
++        ret = s->native_hdr_output
++            ? mediacodec_hdr_base_packet(avctx, s, &s->buffered_pkt)
++            : mediacodec_dovi_parse_packet(avctx, s, &s->buffered_pkt);
 +        if (ret < 0)
 +            return ret;
 +#endif
      }
  
      return AVERROR(EAGAIN);
-@@ -575,6 +851,10 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -575,6 +995,10 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -412,12 +583,14 @@ index bc176d8..e6a07bb 100644
      ff_mediacodec_dec_flush(avctx, s->ctx);
  }
  
-@@ -594,6 +874,8 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
+@@ -594,6 +1018,10 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
  #define OFFSET(x) offsetof(MediaCodecH264DecContext, x)
  #define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
  static const AVOption ff_mediacodec_vdec_options[] = {
 +    { "native_dolby_vision", "Use the platform Dolby Vision decoder for direct Surface output",
 +            OFFSET(native_dolby_vision), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
++    { "native_hdr_output", "Present the compatible PQ (16) or HLG (18) base signal directly",
++            OFFSET(native_hdr_output), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 18, VD },
      { "delay_flush", "Delay flush until hw output buffers are returned to the decoder",
                       OFFSET(delay_flush), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
      { "ndk_codec", "Use MediaCodec from NDK",
