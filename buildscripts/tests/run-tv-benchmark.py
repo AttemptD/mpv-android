@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Benchmark the TV flavor without changing production players or global settings."""
 import argparse
+import fcntl
+import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -22,10 +25,20 @@ parser.add_argument('--force-hdr10', action='store_true', help='Test-only opt-in
 parser.add_argument('--force-dolby', action='store_true', help='Diagnostic decoder attempt only; does not establish Dolby display support')
 parser.add_argument('--platform-dolby', action='store_true', help='Enable the TV flavor platform Dolby compatibility preference')
 parser.add_argument('--safe-seek', action='store_true', help='Diagnostic: decode all preroll frames during exact seeks')
+parser.add_argument('--renderer', choices=['gpu', 'gpu-next'], default='gpu-next')
+parser.add_argument('--sdr-tone-map', choices=['bt.2390', 'reinhard', 'clip'],
+                    help='Diagnostic: explicitly map HDR to BT.709/BT.1886/100 nits')
 args = parser.parse_args()
 if not 12 <= args.duration <= 120:
     parser.error('--duration must be between 12 and 120 seconds')
 if args.lifecycle: args.duration = max(args.duration, 22)
+lock_key = hashlib.sha256(f'{args.serial}:{PACKAGE}'.encode()).hexdigest()[:20]
+lock_fd = os.open(f'/tmp/tv-mpv-benchmark-{lock_key}.lock',
+                  os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+try:
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    parser.error('Another benchmark is active for this device; wait for it to restore its configuration')
 destination = Path(tempfile.mkdtemp(prefix='tv-mpv-', dir='/tmp')).resolve()
 print(f'Results: {destination}', flush=True)
 
@@ -55,13 +68,18 @@ try:
     shell(f'am force-stop {PACKAGE}')
     shell(f'run-as {PACKAGE} mkdir -p files/scripts shared_prefs')
     backups = {path: read(path) for path in (conf, script, prefs)}
+    for path, data in backups.items():
+        if data is not None:
+            backup = destination / 'original-config' / path
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.write_bytes(data)
     shell(f'run-as {PACKAGE} rm -f files/tv-benchmark.json files/tv-benchmark.json.partial')
     command = f'cat {shlex.quote(args.remote_media)} | run-as {PACKAGE} sh -c ' + shlex.quote('cat > files/tv-sample.mkv')
     shell(command, timeout=120)
     subtitle = b'[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginL, MarginR, MarginV\nStyle: Default,Roboto,70,&H0000FFFF,&H00000000,1,3,2,20,20,80\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:00.00,0:10:00.00,Default,TV mpv - native subtitle test\n'
     write('files/tv-test.ass', subtitle)
     configuration = [
-        'vo=gpu-next', 'hwdec=mediacodec,mediacodec-copy', 'video-sync=audio',
+        f'vo={args.renderer}', 'hwdec=mediacodec,mediacodec-copy', 'video-sync=audio',
         'keep-open=yes', 'osd-level=0', 'sub-auto=no',
         'load-scripts=no', f'scripts-append=/data/user/0/{PACKAGE}/files/scripts/tv-benchmark.lua',
         f'sub-file=/data/user/0/{PACKAGE}/files/tv-test.ass', 'sid=auto',
@@ -71,6 +89,9 @@ try:
     if args.audio == 'none': configuration.append('aid=no')
     if args.audio == 'stereo': configuration.append('audio-channels=stereo')
     if args.safe_seek: configuration.append('hr-seek-framedrop=no')
+    if args.sdr_tone_map:
+        configuration.extend(['android-hdr-output=no', 'target-prim=bt.709',
+            'target-trc=bt.1886', 'target-peak=100', f'tone-mapping={args.sdr_tone_map}'])
     if args.output == 'embed':
         configuration.extend(['vo=mediacodec_embed', 'hwdec=mediacodec',
             f'scripts=/data/user/0/{PACKAGE}/files/scripts/tv-benchmark.lua'])
@@ -103,7 +124,7 @@ try:
     if not report: raise RuntimeError(f'No result within timeout; inspect {destination}')
     (destination / 'report.json').write_bytes(report)
     result = json.loads(report)
-    failed_speed = False
+    failed_playback = False
     progressing = [s for s in result['samples'] if s.get('time-pos', 0) >= 3 and not s.get('pause')]
     if len(progressing) < 2: progressing = [s for s in result['samples'] if 'time-pos' in s]
     if len(progressing) >= 2 and not args.lifecycle:
@@ -124,8 +145,9 @@ try:
             if state.get('active'):
                 submitted = (state.get('frames', 0) - first.get(name, {}).get('frames', 0)) / elapsed
                 summary['submitted_fps'] = submitted
-                failed_speed = submitted < last.get('container-fps', 0) * 0.9
-        failed_speed = failed_speed or abs(summary['clock_ratio'] - 1) > 0.05
+                failed_playback = submitted < last.get('container-fps', 0) * 0.9
+        failed_playback = failed_playback or abs(summary['clock_ratio'] - 1) > 0.05 or \
+            summary['render_drops'] > 0 or summary['decoder_drops'] > 0
         (destination / 'summary.json').write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, ensure_ascii=False))
     print(json.dumps({'directory': str(destination), 'reason': result['reason'], 'checks': result['checks']}))
@@ -134,7 +156,7 @@ try:
     if args.lifecycle and not all(result['checks'].get(key) is True for key in
         ('paused-seek', 'paused-seek-forward', 'paused-seek-backward', 'paused-caption-redraw', 'resume-clock')):
         raise SystemExit(3)
-    if failed_speed: raise SystemExit(4)
+    if failed_playback: raise SystemExit(4)
 finally:
     shell(f'am force-stop {PACKAGE}', check=False)
     for path, data in backups.items():
