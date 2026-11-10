@@ -1,0 +1,83 @@
+P7 MEL -> P8.1 Android native Dolby output
+
+Phone policy: AfuseKt's existing member-only Lua runtime first decodes the
+original BL RPU through the GPU path. video-dec-params/dolby-vision-mel allows
+promotion only after a canonical zero-residual MEL mapping is seen. The native
+converter then validates every access unit independently; a first-frame MEL
+classification is not permission to discard a later nonzero FEL residual.
+
+The converter changes the DOVI configuration to P8/CCID1/no EL, removes NLQ,
+uses P8.1 matrices, retains BL mapping and supported DM/trim blocks, and removes
+EL NALs only after validation. The compressed BL is not re-encoded. Unknown,
+corrupt, missing or non-MEL RPUs reject the native path. MediaCodec latches a
+conversion failure; it cannot send the unchanged rejected packet on a retry.
+mpv reports native runtime failures to the host instead of looping through
+software decoders that the native VO cannot present. The host reloads the
+original stream with full EL processing, preserving position/pause/playlist.
+
+A device without native Dolby uses the existing GPU HDR path, or GPU SDR
+mapping without a PQ-capable screen. FEL always remains in the existing GPU
+EL path, subject to the existing P7 performance guard/manual base-layer choice.
+The optional TV native-hdr-p7-base flag is not used by the phone Lua policy.
+Filters, shaders and explicit software/copy-back selection also retain GPU.
+No iOS, EXO or membership entitlement behavior changes.
+
+Conservative boundary: native promotion requires the RPU in the selected
+compressed BL stream. Dual-track material whose RPU is carried only in the
+separate EL stream remains on GPU; inheriting a decoded EL RPU cannot supply
+the missing compressed RPU to a native BL decoder.
+
+Host regression
+  Test: p7-mel-conversion.c (114 assertions).
+  FFmpeg: pinned source + ffmpeg-upstream-20261109.patch.
+  Independent reference: quietvoid/dovi_tool commit
+    41dae646193c12de152333ff5dbc33579cb9ef4a, assets/tests/
+    mel_orig.bin, mel_to_81.bin, fel_orig.bin, profile8.bin,
+    mel_variable_l8_length13.bin.
+  Source: https://github.com/quietvoid/dovi_tool/tree/41dae646193c12de152333ff5dbc33579cb9ef4a/assets/tests
+  Use official dovi_tool 2.3.4, editor JSON {"mode":2}, to produce
+    mel_variable_l8_length13_to81.bin from mel_variable_l8_length13.bin.
+  Test reference equality canonicalizes static/dynamic block ordering using
+  FFmpeg's encoder; both source and reference CRCs are validated. Independent
+  dovi_tool JSON exports also match after sorting extension blocks and omitting
+  only the order-dependent CRC. CM v2.9 and variable-length CM v4.0 L8 trims
+  retain identical semantic values.
+
+  Configure a separate host FFmpeg build with:
+    --disable-everything --disable-autodetect --disable-doc --disable-network
+    --disable-x86asm --enable-ffmpeg --enable-ffprobe --enable-protocol=file
+    --enable-demuxer=mov,matroska,hevc --enable-muxer=mp4,matroska,hevc,null
+    --enable-decoder=hevc --enable-parser=hevc
+    --enable-bsf=hevc_mp4toannexb,dovi_mel,dovi_rpu,dovi_split
+  Run make, then link p7-mel-conversion.c against host libavcodec.a/libavutil.a,
+  with the FFmpeg source/build include paths and platform math/thread/iconv libs.
+  Arguments: reference vector directory, converted RPU output path.
+
+Synthetic runtime fixtures
+  create-p7-fixture.c links host libavformat.a/libavcodec.a/libavutil.a.
+  Arguments: HDR10 MP4, output MP4, one-frame RPU .bin; optionally another RPU
+  and switch PTS in seconds. Source MP4 must have 4-byte HEVC NAL lengths.
+  Every original BL/AAC packet is retained. EL is a decodable duplicate of BL,
+  with matching PTS and HEVC enhancement configuration, for exercising pairing.
+  This is not an authored Dolby residual or a visual fidelity reference.
+  MEL/FEL use the independent original RPUs above. A deliberately invalid
+  MEL->FEL mixed-RPU fixture switches at 5 seconds and removes audio to exercise
+  runtime failure at video-only EOF. It must return to the original GPU EL path.
+  A full 288-frame MEL clip converted through hevc_mp4toannexb,dovi_mel has
+  identical decoded BL frame checksums to the original HDR10 source.
+
+Android integration tests live in AfuseKt's independent is.xyz.mpv.test APK:
+  NativeDolbyPlaybackTest.java; current Lua copied by its asset task.
+  p7MelNativePlaybackAndTransitions (Dolby phone)
+  p7MelHdrAndSdrFallback (capability isolation)
+  p7FelRetainsEnhancementLayer (pairing and actual enhancement shader pass)
+  p7MelUnavailableDecoderPreservesState (non-Dolby phone, forced request)
+  p7LateFelRpuRestoresOriginalEnhancement (Dolby phone, mixed-RPU fault)
+  Existing P5/P8/HDR10/HLG tests must also pass. No production APK installation.
+
+Source replay: apply the complete mpv export to v_mpv_upstream, then the
+existing mpv-tv-native-p7-base.patch; compare with the prepared local source.
+Apply the complete FFmpeg export to v_ffmpeg. download-deps.sh is idempotent.
+The supplied phone build uses existing NDK r29 dependency caches (not a fresh
+full-dependency build with the recipe's currently declared r30). Its manifest
+records the actual NDK, supplemental TV patch, library hashes and alignment.

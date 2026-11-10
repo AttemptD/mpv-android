@@ -23,7 +23,7 @@ v_curl=8.23.0
 mpv_repository=https://github.com/AttemptD/mpv.git
 mpv_upstream_repository=https://github.com/mpv-player/mpv.git
 v_mpv_upstream=d9d402dc07d02c9aa178fb3e33adc390fa2785cc
-v_mpv=f12421e85ae06a821a6ccaf53680b41fc155d204
+v_mpv=a3066f4d59135381c5e018773584e364741f13d3
 v_libplacebo=275f7dea27924cdd34ab2e6c20e448b6bc4fab65
 v_ffmpeg=d32b387f2b0a484599d4587d651891f0c63c4238
 

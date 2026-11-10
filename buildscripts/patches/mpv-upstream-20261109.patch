@@ -1,5 +1,5 @@
 diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
-index 70c3418852..1b4463c5fc 100644
+index 70c3418852..bf91ed0163 100644
 --- a/DOCS/man/input.rst
 +++ b/DOCS/man/input.rst
 @@ -3718,6 +3718,11 @@ Property list
@@ -22,7 +22,7 @@ index 70c3418852..1b4463c5fc 100644
                  "metadata"           MPV_FORMAT_NODE_MAP
                      (key and string value for each metadata entry)
  
-@@ -4030,6 +4036,19 @@ Property list
+@@ -4030,6 +4036,28 @@ Property list
  
      How these details are handled may change in the future.
  
@@ -32,6 +32,15 @@ index 70c3418852..1b4463c5fc 100644
 +    ``decoder-failed`` reports native decoder initialization failure. ``frames``
 +    and ``osd-updates`` count submitted video buffers and caption updates for
 +    this VO instance. In other VOs, flags are false and counters are zero.
++
++    ``mel-conversion`` reports whether P7 MEL to P8.1 conversion was requested.
++
++``video-dec-params/dolby-vision-mel``
++    True only if the original decoded frame carries a canonical zero-residual
++    MEL RPU. Metadata inherited from a separate enhancement stream is not
++    sufficient for native conversion of the selected base stream. Hosts must
++    also check that the selected source is Profile 7 and the device supports
++    Profile 8. A false value includes absent or unrecognized RPU metadata.
 +
 +``android-native-hdr-status``
 +    Same counters and failure flags as ``android-native-dolby-status``, scoped
@@ -43,7 +52,7 @@ index 70c3418852..1b4463c5fc 100644
      Current video output driver (name as used with ``--vo``).
  
 diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
-index dddff27f69..6572467412 100644
+index dddff27f69..c719c19899 100644
 --- a/DOCS/man/options.rst
 +++ b/DOCS/man/options.rst
 @@ -4024,6 +4024,25 @@ Disc Devices
@@ -72,10 +81,19 @@ index dddff27f69..6572467412 100644
  ``--cdda-...``
      These options can be used to tune the CD Audio reading feature of mpv.
  
-@@ -7263,6 +7282,27 @@ them.
+@@ -7263,6 +7282,36 @@ them.
      :/opt/homebrew/bin:  homebrew (ARM) install path
      :/opt/homebrew/sbin: homebrew (ARM) install path
  
++``--android-native-dolby-p7-mel=<yes|no>``
++    Permit native Dolby output for Profile 7 MEL by converting its RPU and
++    configuration to single-layer Profile 8.1 (default: no). Requires
++    ``android-native-dolby=yes`` and the matching FFmpeg converter. The host
++    must first confirm ``video-dec-params/dolby-vision-mel``. The converter
++    independently checks every RPU and rejects FEL, malformed or unsupported
++    metadata before discarding enhancement NAL units. A failure must restore
++    GPU playback of the original stream. No video image data is re-encoded.
++
 +``--android-native-dolby=<yes|no>``
 +    Enable platform Dolby Vision P5/P8 decoding for the Android native Dolby VO
 +    (default: no). Requires a supported decoder/display and an embedding host
@@ -100,7 +118,7 @@ index dddff27f69..6572467412 100644
  ``--android-surface-size=<WxH>``
      Set dimensions of the rendering surface used by the Android gpu context.
      Needs to be set by the embedding application if the dimensions change during
-@@ -7270,6 +7310,45 @@ them.
+@@ -7270,6 +7319,45 @@ them.
  
      Android with ``--gpu-context=android`` only.
  
@@ -146,7 +164,7 @@ index dddff27f69..6572467412 100644
  ``--d3d11-composition-size=<WxH>``
      Set size of the output for d3d11 composition mode.
      When use composition mode, there is no window, must set the output size by
-@@ -7277,6 +7356,17 @@ them.
+@@ -7277,6 +7365,17 @@ them.
  
      Windows with ``--gpu-context=d3d11`` and  ``--d3d11-output-mode=composition`` only.
  
@@ -784,7 +802,7 @@ index 327a432705..6fbcb7cbaa 100644
  if features['dvdnav']
      dependencies += dvdnav
 diff --git a/options/options.c b/options/options.c
-index a432414551..bb81c7f036 100644
+index a432414551..d62c998239 100644
 --- a/options/options.c
 +++ b/options/options.c
 @@ -172,6 +172,10 @@ static const m_option_t mp_vo_opt_list[] = {
@@ -798,7 +816,7 @@ index a432414551..bb81c7f036 100644
      {"video-unscaled", OPT_CHOICE(unscaled,
          {"no", 0}, {"yes", 1}, {"downscale-big", 2})},
      {"video-recenter", OPT_BOOL(recenter)},
-@@ -250,6 +254,14 @@ static const m_option_t mp_vo_opt_list[] = {
+@@ -250,6 +254,15 @@ static const m_option_t mp_vo_opt_list[] = {
  #endif
  #if HAVE_EGL_ANDROID
      {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
@@ -810,10 +828,11 @@ index a432414551..bb81c7f036 100644
 +    {"android-native-hdr", OPT_CHOICE(android_native_hdr,
 +        {"no", 0}, {"pq", 16}, {"hlg", 18}), .flags = UPDATE_VO},
 +    {"android-native-dolby-surface", OPT_INT64(android_native_dolby_surface), .flags = UPDATE_VO},
++    {"android-native-dolby-p7-mel", OPT_BOOL(android_native_dolby_p7_mel), .flags = UPDATE_VO},
  #endif
  #if HAVE_D3D11
      {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
-@@ -1027,7 +1039,10 @@ static const struct MPOpts mp_default_opts = {
+@@ -1027,7 +1040,10 @@ static const struct MPOpts mp_default_opts = {
      .osd_duration = 1000,
  #if HAVE_LUA
      .lua_load_osc = true,
@@ -826,10 +845,10 @@ index a432414551..bb81c7f036 100644
      .lua_ytdl_raw_options = NULL,
      .lua_load_stats = true,
 diff --git a/options/options.h b/options/options.h
-index 1f8e7cb093..6b2c514eec 100644
+index 1f8e7cb093..7a5c99c3ec 100644
 --- a/options/options.h
 +++ b/options/options.h
-@@ -86,12 +86,19 @@ typedef struct mp_vo_opts {
+@@ -86,12 +86,20 @@ typedef struct mp_vo_opts {
      int video_sync;
  
      struct m_geometry android_surface_size;
@@ -839,6 +858,7 @@ index 1f8e7cb093..6b2c514eec 100644
 +    int64_t android_native_dolby_surface;
 +    bool android_dovi_yuv;
 +    bool android_dovi_dual;
++    bool android_native_dolby_p7_mel;
  
      struct m_geometry d3d11_composition_size;
  
@@ -849,7 +869,7 @@ index 1f8e7cb093..6b2c514eec 100644
  } mp_vo_opts;
  
  // Subtitle options needed by the subtitle decoders/renderers.
-@@ -166,6 +173,9 @@ struct mp_bluray_opts {
+@@ -166,6 +174,9 @@ struct mp_bluray_opts {
      int min_title_length;
      int region;
      int uo_restriction;
@@ -860,7 +880,7 @@ index 1f8e7cb093..6b2c514eec 100644
  
  struct dvda_opts {
 diff --git a/player/command.c b/player/command.c
-index 981fe47a4d..86f91d5bef 100644
+index 981fe47a4d..da6f9ea208 100644
 --- a/player/command.c
 +++ b/player/command.c
 @@ -34,6 +34,7 @@
@@ -900,7 +920,15 @@ index 981fe47a4d..86f91d5bef 100644
          {"dolby-vision-level", SUB_PROP_INT(p.dv_level),
                          .unavailable = !p.dovi},
          {"metadata", SUB_PROP_KEYVALUE_LIST(tag_list),
-@@ -3148,6 +3157,29 @@ static int mp_property_gpu_context(void *ctx, struct m_property *p, int action,
+@@ -2604,6 +2613,7 @@ static int property_imgparams(const struct mp_image_params *p, int action, void
+             SUB_PROP_STR(m_opt_choice_str(pl_csp_prim_names, p->color.primaries))},
+         {"gamma",
+             SUB_PROP_STR(m_opt_choice_str(pl_csp_trc_names, p->color.transfer))},
++        {"dolby-vision-mel", SUB_PROP_BOOL(p->dovi_mel)},
+         {"sig-peak", SUB_PROP_FLOAT(p->color.hdr.max_luma / MP_REF_WHITE)},
+         {"light",
+             SUB_PROP_STR(m_opt_choice_str(mp_csp_light_names, p->light))},
+@@ -3148,6 +3158,30 @@ static int mp_property_gpu_context(void *ctx, struct m_property *p, int action,
                                  mpctx->video_out->context_name : NULL);
  }
  
@@ -915,6 +943,7 @@ index 981fe47a4d..86f91d5bef 100644
 +             : mpctx->opts->vo->android_native_dolby))
 +        vo_control(mpctx->video_out, VOCTRL_GET_ANDROID_NATIVE_DOLBY, &state);
 +    struct m_sub_property props[] = {
++        {"mel-conversion", SUB_PROP_BOOL(!hdr && mpctx->opts->vo->android_native_dolby_p7_mel)},
 +        {"active", SUB_PROP_BOOL(state.active)},
 +        {"failed", SUB_PROP_BOOL(state.failed)},
 +        {"decoder-failed", SUB_PROP_BOOL(state.decoder_failed)},
@@ -930,7 +959,7 @@ index 981fe47a4d..86f91d5bef 100644
  static int mp_property_osd_dim(void *ctx, struct m_property *prop,
                                 int action, void *arg)
  {
-@@ -4814,6 +4846,8 @@ static const struct m_property mp_properties_base[] = {
+@@ -4814,6 +4848,8 @@ static const struct m_property mp_properties_base[] = {
      {"estimated-frame-number", mp_property_frame_number},
  
      {"osd-dimensions", mp_property_osd_dim},
@@ -939,7 +968,7 @@ index 981fe47a4d..86f91d5bef 100644
      M_PROPERTY_ALIAS("osd-width", "osd-dimensions/w"),
      M_PROPERTY_ALIAS("osd-height", "osd-dimensions/h"),
      M_PROPERTY_ALIAS("osd-par", "osd-dimensions/par"),
-@@ -6104,6 +6138,75 @@ static void cmd_seek(void *p)
+@@ -6104,6 +6140,75 @@ static void cmd_seek(void *p)
          mpctx->add_osd_seek_info |= OSD_SEEK_INFO_TEXT;
  }
  
@@ -1015,7 +1044,7 @@ index 981fe47a4d..86f91d5bef 100644
  static void cmd_revert_seek(void *p)
  {
      struct mp_cmd_ctx *cmd = p;
-@@ -7628,6 +7731,10 @@ static void cmd_notify_property(void *p)
+@@ -7628,6 +7733,10 @@ static void cmd_notify_property(void *p)
  
  const struct mp_cmd_def mp_cmds[] = {
      { "ignore", cmd_ignore, .is_ignore = true, .is_noisy = true, },
@@ -1026,7 +1055,7 @@ index 981fe47a4d..86f91d5bef 100644
  
      { "seek", cmd_seek,
          {
-@@ -8493,9 +8600,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8493,9 +8602,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
      if (flags & UPDATE_VO && mpctx->video_out) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_pin *filter_src = mpctx->vo_chain ? mpctx->vo_chain->filter_src : NULL;
@@ -1051,7 +1080,7 @@ index 981fe47a4d..86f91d5bef 100644
          if (filter_src) {
              reinit_video_chain_src(mpctx, NULL);
              if (mpctx->vo_chain) {
-@@ -8505,9 +8626,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8505,9 +8628,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          } else {
              reinit_video_chain(mpctx);
          }
@@ -1071,7 +1100,7 @@ index 981fe47a4d..86f91d5bef 100644
  
          mp_wakeup_core(mpctx);
      }
-@@ -8538,11 +8666,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8538,11 +8668,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
          if (dec) {
@@ -1095,7 +1124,7 @@ index 981fe47a4d..86f91d5bef 100644
              if (last_pts != MP_NOPTS_VALUE)
                  queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
          }
-@@ -8563,10 +8702,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8563,10 +8704,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
  
      if (flags & UPDATE_VD && mpctx->vo_chain) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
@@ -1892,7 +1921,7 @@ index 0000000000..9286274bfb
 +
 +#endif
 diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
-index a1834e240a..32dc16eaa5 100644
+index a1834e240a..b5c16a13ef 100644
 --- a/video/decode/vd_lavc.c
 +++ b/video/decode/vd_lavc.c
 @@ -248,6 +248,7 @@ typedef struct lavc_ctx {
@@ -1951,7 +1980,7 @@ index a1834e240a..32dc16eaa5 100644
  
      m_config_cache_update(ctx->opts_cache);
  
-@@ -870,6 +889,43 @@ static void init_avctx(struct mp_filter *vd)
+@@ -870,6 +889,50 @@ static void init_avctx(struct mp_filter *vd)
          goto error;
      }
  
@@ -1979,14 +2008,21 @@ index a1834e240a..32dc16eaa5 100644
 +        }
 +    }
 +    if (native_surface && ctx->vo->opts->android_native_dolby) {
++        bool mel = ctx->vo->opts->android_native_dolby_p7_mel;
 +        if (!ctx->use_hwdec || ctx->hwdec.copying ||
 +            strcmp(lavc_codec->name, "hevc_mediacodec") != 0 ||
-+            (c->dv_profile != 5 && c->dv_profile != 8)) {
-+            MP_ERR(vd, "Native Dolby Vision requires P5/P8 MediaCodec Surface decoding.\n");
++            (mel ? c->dv_profile != 7 || c->dv_bl_compatibility_id != 6
++                 : c->dv_profile != 5 && c->dv_profile != 8)) {
++            MP_ERR(vd, "Native Dolby Vision requires P5/P8 or verified P7 MEL MediaCodec decoding.\n");
 +            goto error;
 +        }
 +        if (av_opt_set_int(avctx, "native_dolby_vision", 1, AV_OPT_SEARCH_CHILDREN) < 0) {
 +            MP_ERR(vd, "FFmpeg does not support native Dolby Vision Surface decoding.\n");
++            goto error;
++        }
++        if (mel && av_opt_set_int(avctx, "native_dolby_p7_mel", 1,
++                                  AV_OPT_SEARCH_CHILDREN) < 0) {
++            MP_ERR(vd, "FFmpeg does not support strict P7 MEL conversion.\n");
 +            goto error;
 +        }
 +    }
@@ -1995,7 +2031,7 @@ index a1834e240a..32dc16eaa5 100644
  #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
      if (avctx->width > 8192 || avctx->height > 8192) {
          MP_ERR(vd, "Frame size too big %" PRIu32 "x%" PRIu32 ".\n", avctx->width, avctx->height);
-@@ -898,6 +954,8 @@ static void init_avctx(struct mp_filter *vd)
+@@ -898,6 +961,8 @@ static void init_avctx(struct mp_filter *vd)
  
  error:
      MP_ERR(vd, "Could not open codec.\n");
@@ -2004,7 +2040,7 @@ index a1834e240a..32dc16eaa5 100644
      uninit_avctx(vd);
  }
  
-@@ -908,6 +966,7 @@ static void reset_avctx(struct mp_filter *vd)
+@@ -908,6 +973,7 @@ static void reset_avctx(struct mp_filter *vd)
      if (ctx->avctx && avcodec_is_open(ctx->avctx))
          avcodec_flush_buffers(ctx->avctx);
      ctx->flushing = false;
@@ -2012,7 +2048,7 @@ index a1834e240a..32dc16eaa5 100644
      ctx->hwdec_request_reinit = false;
      // Wait for the first keyframe after reset to ensure the decoder state is
      // valid. Seeking should already jump to a keyframe, so this is safe.
-@@ -1236,6 +1295,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+@@ -1236,6 +1302,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
  
      prepare_decoding(vd);
  
@@ -2025,7 +2061,7 @@ index a1834e240a..32dc16eaa5 100644
      if (ctx->wait_for_keyframe > 0 && pkt) {
          if (!pkt->keyframe && !ctx->intra_only) {
              MP_DBG(vd, "Waiting for keyframe after reinit (dropping frame).\n");
-@@ -1300,8 +1365,22 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1300,8 +1372,22 @@ static int decode_frame(struct mp_filter *vd)
              // start over in case we get new packets at some point in the future.
              // This must take the delay queue into account, so avctx returns EOF
              // until the delay queue has been drained.
@@ -2050,7 +2086,7 @@ index a1834e240a..32dc16eaa5 100644
          } else if (ret == AVERROR(EAGAIN)) {
              // just retry after caller writes a packet
          } else {
-@@ -1316,6 +1395,59 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1316,6 +1402,59 @@ static int decode_frame(struct mp_filter *vd)
      // data.
      mp_assert(ctx->pic->buf[0]);
  
@@ -2110,6 +2146,23 @@ index a1834e240a..32dc16eaa5 100644
      struct mp_image *mpi = mp_image_from_av_frame(ctx->pic);
      if (!mpi) {
          av_frame_unref(ctx->pic);
+@@ -1347,6 +1486,16 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+ 
+     int ret = decode_frame(vd);
+ 
++    if (ctx->hwdec_failed && native_surface_requested(ctx)) {
++        // Native presentation cannot consume the software/copy-back frames
++        // selected by the generic fallback loop. Report runtime failures just
++        // like initialization failures and let the host reload with a GPU VO.
++        MP_ERR(vd, "Native Surface decoding failed; host GPU recovery required.\n");
++        vo_control(ctx->vo, VOCTRL_ANDROID_NATIVE_DOLBY_DECODER_FAILED, NULL);
++        uninit_avctx(vd);
++        return AVERROR_EOF;
++    }
++
+     if (ctx->hwdec_failed) {
+         // Failed hardware decoding? Try the next one, and eventually software.
+         struct demux_packet **pkts = ctx->sent_packets;
 diff --git a/video/dovi_mel.h b/video/dovi_mel.h
 new file mode 100644
 index 0000000000..6e9cd58717
@@ -2161,6 +2214,47 @@ index 6b62eb81af..5f1a9245f8 100644
  
      // List of allowed IMGFMT_s, terminated with 0.
      // If NULL, all software formats are considered to be supported.
+diff --git a/video/mp_image.c b/video/mp_image.c
+index a90c1273c5..03236fa4e7 100644
+--- a/video/mp_image.c
++++ b/video/mp_image.c
+@@ -38,6 +38,7 @@
+ #include "fmt-conversion.h"
+ #include "hwdec.h"
+ #include "mp_image.h"
++#include "video/dovi_mel.h"
+ #include "osdep/threads.h"
+ #include "sws_utils.h"
+ #include "out/placebo/utils.h"
+@@ -570,6 +571,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
+     dst->params.sys_orig = src->params.sys_orig;
+     dst->params.no_dovi = src->params.no_dovi;
+     dst->params.no_enhancement_layer = src->params.no_enhancement_layer;
++    dst->params.dovi_mel = src->params.dovi_mel;
+ 
+     // ensure colorspace consistency
+     enum pl_color_system dst_forced_csp = mp_image_params_get_forced_csp(&dst->params);
+@@ -1210,6 +1212,7 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+     if (sd) {
+ #ifdef PL_HAVE_LAV_DOLBY_VISION
+         const AVDOVIMetadata *metadata = (const AVDOVIMetadata *)sd->buf->data;
++        dst->params.dovi_mel = mp_dovi_is_mel(metadata);
+         dst->dovi = dovi = av_buffer_alloc(sizeof(struct pl_dovi_metadata));
+         MP_HANDLE_OOM(dovi);
+         pl_map_avdovi_metadata(&dst->params.color, &dst->params.repr,
+diff --git a/video/mp_image.h b/video/mp_image.h
+index f5c1562815..26c61a71f4 100644
+--- a/video/mp_image.h
++++ b/video/mp_image.h
+@@ -66,6 +66,8 @@ struct mp_image_params {
+     // Flags for f_enhancement_pair.c to not inherit flags from EL.
+     bool no_dovi;
+     bool no_enhancement_layer;
++    // Original decoded RPU is canonical zero-residual MEL. Not inherited from EL.
++    bool dovi_mel;
+ };
+ 
+ /* Memory management:
 diff --git a/video/out/hwdec/android_yuv_shaders.h b/video/out/hwdec/android_yuv_shaders.h
 new file mode 100644
 index 0000000000..a2152115cc

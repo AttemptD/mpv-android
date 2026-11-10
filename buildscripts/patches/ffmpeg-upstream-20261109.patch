@@ -1,5 +1,5 @@
 diff --git a/configure b/configure
-index 374bd5c..3772467 100755
+index 374bd5c..50e1182 100755
 --- a/configure
 +++ b/configure
 @@ -275,6 +275,7 @@ External library support:
@@ -18,7 +18,24 @@ index 374bd5c..3772467 100755
      libsnappy
      libsoxr
      libspeex
-@@ -4132,6 +4134,7 @@ librtmps_protocol_deps="librtmp"
+@@ -3658,7 +3660,7 @@ hevc_cuvid_decoder_deps="cuvid"
+ hevc_cuvid_decoder_select="hevc_mp4toannexb_bsf"
+ hevc_d3d12va_encoder_select="cbs_h265 d3d12va_encode"
+ hevc_mediacodec_decoder_deps="mediacodec"
+-hevc_mediacodec_decoder_select="hevc_mp4toannexb_bsf hevc_parser"
++hevc_mediacodec_decoder_select="hevc_mp4toannexb_bsf hevc_parser dovi_mel_bsf"
+ hevc_mediacodec_encoder_deps="mediacodec"
+ hevc_mediacodec_encoder_select="extract_extradata_bsf hevc_metadata"
+ hevc_mf_encoder_deps="mediafoundation"
+@@ -3754,6 +3756,7 @@ av1_frame_split_bsf_select="cbs_av1"
+ av1_metadata_bsf_select="cbs_av1"
+ dovi_rpu_bsf_select="cbs_h265 cbs_av1 dovi_rpudec dovi_rpuenc"
+ dovi_split_bsf_select="hevcparse"
++dovi_mel_bsf_select="hevcparse dovi_rpudec dovi_rpuenc"
+ dts2pts_bsf_select="cbs_h264 h264parse cbs_h265 hevc_parser"
+ eac3_core_bsf_select="ac3_parser"
+ eia608_to_smpte436m_bsf_select="smpte_436m"
+@@ -4132,6 +4135,7 @@ librtmps_protocol_deps="librtmp"
  librtmpt_protocol_deps="librtmp"
  librtmpte_protocol_deps="librtmp"
  libsmbclient_protocol_deps="libsmbclient gplv3"
@@ -26,7 +43,7 @@ index 374bd5c..3772467 100755
  libsrt_protocol_deps="libsrt"
  libsrt_protocol_select="network"
  libssh_protocol_deps="libssh"
-@@ -7435,6 +7438,8 @@ enabled librubberband     && require_pkg_config librubberband "rubberband >= 1.8
+@@ -7435,6 +7439,8 @@ enabled librubberband     && require_pkg_config librubberband "rubberband >= 1.8
  enabled libshine          && require_pkg_config libshine shine shine/layer3.h shine_encode_buffer
  enabled libsmbclient      && { check_pkg_config libsmbclient smbclient libsmbclient.h smbc_init ||
                                 require libsmbclient libsmbclient.h smbc_init -lsmbclient; }
@@ -35,11 +52,347 @@ index 374bd5c..3772467 100755
  enabled libsnappy         && require libsnappy snappy-c.h snappy_compress -lsnappy -lstdc++
  enabled libsoxr           && require libsoxr soxr.h soxr_create -lsoxr
  enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/sftp.h sftp_init
+diff --git a/libavcodec/bitstream_filters.c b/libavcodec/bitstream_filters.c
+index 9c9443e..3b890d1 100644
+--- a/libavcodec/bitstream_filters.c
++++ b/libavcodec/bitstream_filters.c
+@@ -35,6 +35,7 @@ extern const FFBitStreamFilter ff_dump_extradata_bsf;
+ extern const FFBitStreamFilter ff_dca_core_bsf;
+ extern const FFBitStreamFilter ff_dovi_rpu_bsf;
+ extern const FFBitStreamFilter ff_dovi_split_bsf;
++extern const FFBitStreamFilter ff_dovi_mel_bsf;
+ extern const FFBitStreamFilter ff_dts2pts_bsf;
+ extern const FFBitStreamFilter ff_dv_error_marker_bsf;
+ extern const FFBitStreamFilter ff_eac3_core_bsf;
+diff --git a/libavcodec/bsf/Makefile b/libavcodec/bsf/Makefile
+index 981bb82..76310a0 100644
+--- a/libavcodec/bsf/Makefile
++++ b/libavcodec/bsf/Makefile
+@@ -24,6 +24,7 @@ OBJS-$(CONFIG_HAPQA_EXTRACT_BSF)          += bsf/hapqa_extract.o
+ OBJS-$(CONFIG_HEVC_METADATA_BSF)          += bsf/h265_metadata.o
+ OBJS-$(CONFIG_DOVI_RPU_BSF)               += bsf/dovi_rpu.o
+ OBJS-$(CONFIG_DOVI_SPLIT_BSF)             += bsf/dovi_split.o
++OBJS-$(CONFIG_DOVI_MEL_BSF)               += bsf/dovi_mel.o dovi_mel.o
+ OBJS-$(CONFIG_HEVC_MP4TOANNEXB_BSF)       += bsf/hevc_mp4toannexb.o
+ OBJS-$(CONFIG_IMX_DUMP_HEADER_BSF)        += bsf/imx_dump_header.o
+ OBJS-$(CONFIG_LCEVC_METADATA_BSF)         += bsf/lcevc_metadata.o
+diff --git a/libavcodec/bsf/dovi_mel.c b/libavcodec/bsf/dovi_mel.c
+new file mode 100644
+index 0000000..f47779b
+--- /dev/null
++++ b/libavcodec/bsf/dovi_mel.c
+@@ -0,0 +1,56 @@
++/*
++ * Strict Dolby Vision Profile 7 MEL to Profile 8.1 bitstream filter.
++ * This file is part of FFmpeg and is licensed under LGPL version 2.1 or later.
++ */
++#include "libavcodec/bsf.h"
++#include "libavcodec/bsf_internal.h"
++#include "libavcodec/dovi_mel.h"
++#include "libavutil/mem.h"
++
++static int init(AVBSFContext *ctx)
++{
++    DOVIMELContext *s = ctx->priv_data;
++    const AVPacketSideData *sd = av_packet_side_data_get(ctx->par_in->coded_side_data,
++        ctx->par_in->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
++    uint8_t *cfg;
++    int ret;
++    if (!sd || sd->size < sizeof(AVDOVIDecoderConfigurationRecord))
++        return AVERROR_INVALIDDATA;
++    if ((ret = ff_dovi_mel_init(s, ctx, (const void *)sd->data)) < 0)
++        return ret;
++    cfg = av_memdup(&s->output.cfg, sizeof(s->output.cfg));
++    if (!cfg)
++        return AVERROR(ENOMEM);
++    if (!av_packet_side_data_add(&ctx->par_out->coded_side_data,
++        &ctx->par_out->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF,
++        cfg, sizeof(s->output.cfg), 0)) {
++        av_free(cfg);
++        return AVERROR(ENOMEM);
++    }
++    return 0;
++}
++
++static int filter(AVBSFContext *ctx, AVPacket *pkt)
++{
++    int ret = ff_bsf_get_packet_ref(ctx, pkt);
++    if (ret < 0)
++        return ret;
++    ret = ff_dovi_mel_convert(ctx->priv_data, pkt);
++    if (ret < 0)
++        av_packet_unref(pkt);
++    return ret;
++}
++
++static void flush(AVBSFContext *ctx) { ff_dovi_mel_flush(ctx->priv_data); }
++static void close(AVBSFContext *ctx) { ff_dovi_mel_close(ctx->priv_data); }
++static const enum AVCodecID codec_ids[] = { AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE };
++
++const FFBitStreamFilter ff_dovi_mel_bsf = {
++    .p.name = "dovi_mel",
++    .p.codec_ids = codec_ids,
++    .priv_data_size = sizeof(DOVIMELContext),
++    .init = init,
++    .filter = filter,
++    .flush = flush,
++    .close = close,
++};
+diff --git a/libavcodec/dovi_mel.c b/libavcodec/dovi_mel.c
+new file mode 100644
+index 0000000..a2d423c
+--- /dev/null
++++ b/libavcodec/dovi_mel.c
+@@ -0,0 +1,212 @@
++/*
++ * Strict Dolby Vision Profile 7 MEL to Profile 8.1 conversion.
++ * This file is part of FFmpeg and is licensed under LGPL version 2.1 or later.
++ */
++#include <limits.h>
++
++#include "libavutil/error.h"
++#include "libavutil/intreadwrite.h"
++#include "libavutil/mem.h"
++#include "avcodec.h"
++#include "dovi_mel.h"
++
++static int compatible_config(const AVDOVIDecoderConfigurationRecord *cfg)
++{
++    return cfg->dv_profile == 7 && cfg->dv_bl_signal_compatibility_id == 6 &&
++           cfg->bl_present_flag && cfg->rpu_present_flag &&
++           cfg->dv_md_compression == AV_DOVI_COMPRESSION_NONE;
++}
++
++int ff_dovi_mel_init(DOVIMELContext *s, void *logctx,
++                     const AVDOVIDecoderConfigurationRecord *cfg)
++{
++    if (!compatible_config(cfg))
++        return AVERROR_INVALIDDATA;
++    s->logctx = s->input.logctx = s->output.logctx = logctx;
++    s->input.cfg = s->output.cfg = *cfg;
++    s->output.cfg.dv_profile = 8;
++    s->output.cfg.dv_bl_signal_compatibility_id = 1;
++    s->output.cfg.el_present_flag = 0;
++    return 0;
++}
++
++static int is_mel(const AVDOVIMetadata *metadata)
++{
++    const AVDOVIRpuDataHeader *h = av_dovi_get_header(metadata);
++    const AVDOVIDataMapping *m = av_dovi_get_mapping(metadata);
++    if (h->disable_residual_flag || h->coef_log2_denom >= 63 ||
++        h->coef_data_type != RPU_COEFF_FIXED ||
++        m->nlq_method_idc != AV_DOVI_NLQ_LINEAR_DZ)
++        return 0;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVINLQParams *n = &m->nlq[c];
++        if (n->nlq_offset || n->linear_deadzone_slope ||
++            n->linear_deadzone_threshold ||
++            n->vdr_in_max != (UINT64_C(1) << h->coef_log2_denom))
++            return 0;
++    }
++    return 1;
++}
++
++static int convert_rpu(DOVIMELContext *s, const H2645NAL *nal,
++                        uint8_t **data, int *size)
++{
++    static const int ycc[9] = {9574, 0, 13802, 9574, -1540, -5348, 9574, 17610, 0};
++    static const int lms[9] = {7222, 8771, 390, 2654, 12430, 1300, 0, 422, 15962};
++    AVDOVIMetadata *metadata = NULL;
++    AVDOVIRpuDataHeader *h;
++    AVDOVIDataMapping *m;
++    AVDOVIColorMetadata *color;
++    int ret;
++
++    if (nal->size < 4 || nal->data[2] != 25 || (nal->data[3] >> 2) != 2)
++        return AVERROR_INVALIDDATA;
++    ret = ff_dovi_rpu_parse(&s->input, nal->data + 2, nal->size - 2,
++                            AV_EF_CRCCHECK | AV_EF_EXPLODE);
++    if (ret < 0)
++        return ret;
++    ret = ff_dovi_get_metadata(&s->input, &metadata);
++    if (ret <= 0)
++        return ret < 0 ? ret : AVERROR_INVALIDDATA;
++    if (!is_mel(metadata)) {
++        av_log(s->logctx, AV_LOG_ERROR, "P7 MEL conversion refused nonzero/unknown enhancement residual\n");
++        ret = AVERROR_INVALIDDATA;
++        goto done;
++    }
++
++    h = av_dovi_get_header(metadata);
++    m = av_dovi_get_mapping(metadata);
++    color = av_dovi_get_color(metadata);
++    h->el_spatial_resampling_filter_flag = 0;
++    h->disable_residual_flag = 1;
++    m->nlq_method_idc = AV_DOVI_NLQ_NONE;
++    memset(m->nlq_pivots, 0, sizeof(m->nlq_pivots));
++    memset(m->nlq, 0, sizeof(m->nlq));
++    m->num_x_partitions = m->num_y_partitions = 1;
++    // P8.1 limited-range BT.2020 coefficients; scene/trim metadata is retained.
++    for (int i = 0; i < 9; i++) {
++        color->ycc_to_rgb_matrix[i] = (AVRational){ycc[i], 1 << 13};
++        color->rgb_to_lms_matrix[i] = (AVRational){lms[i], 1 << 14};
++    }
++    color->ycc_to_rgb_offset[0] = (AVRational){1, 16};
++    color->ycc_to_rgb_offset[1] = color->ycc_to_rgb_offset[2] = (AVRational){1, 2};
++    color->signal_color_space = 0;
++    ret = ff_dovi_rpu_generate(&s->output, metadata, FF_DOVI_WRAP_NAL, data, size);
++    if (ret >= 0 && (!*data || *size <= 0))
++        ret = AVERROR_INVALIDDATA;
++done:
++    av_free(metadata);
++    return ret;
++}
++
++int ff_dovi_mel_convert(DOVIMELContext *s, AVPacket *pkt)
++{
++    AVPacket converted = {0};
++    const uint8_t *cfg_data;
++    size_t cfg_size;
++    uint8_t **rpus = NULL;
++    int *sizes = NULL;
++    int ret, bytes = 0, rpu_count = 0, needs_rpu = 0;
++    cfg_data = av_packet_get_side_data(pkt, AV_PKT_DATA_DOVI_CONF, &cfg_size);
++    if (cfg_data && (cfg_size < sizeof(s->input.cfg) ||
++        !compatible_config((const void *)cfg_data)))
++        return AVERROR_INVALIDDATA;
++    ret = ff_h2645_packet_split(&s->packet, pkt->data, pkt->size, s->logctx, 4,
++                                AV_CODEC_ID_HEVC, H2645_FLAG_SMALL_PADDING);
++    if (ret < 0)
++        return ret;
++    if (!s->packet.nb_nals)
++        return AVERROR_INVALIDDATA;
++    rpus = av_calloc(s->packet.nb_nals, sizeof(*rpus));
++    sizes = av_calloc(s->packet.nb_nals, sizeof(*sizes));
++    if (!rpus || !sizes) {
++        ret = AVERROR(ENOMEM);
++        goto done;
++    }
++    // Validate every RPU before removing any EL or replacing the caller's packet.
++    for (int i = 0; i < s->packet.nb_nals; i++) {
++        const H2645NAL *n = &s->packet.nals[i];
++        needs_rpu |= n->type < 32 || n->type == 63 || n->nuh_layer_id;
++        if (n->type == 62) {
++            if (n->nuh_layer_id) {
++                ret = AVERROR_INVALIDDATA;
++                goto done;
++            }
++            if ((ret = convert_rpu(s, n, &rpus[i], &sizes[i])) < 0)
++                goto done;
++            rpu_count++;
++        }
++    }
++    if (needs_rpu && !rpu_count) {
++        av_log(s->logctx, AV_LOG_ERROR, "P7 MEL conversion requires an RPU on each base-layer access unit\n");
++        ret = AVERROR_INVALIDDATA;
++        goto done;
++    }
++    for (int i = 0; i < s->packet.nb_nals; i++) {
++        const H2645NAL *n = &s->packet.nals[i];
++        int size;
++        if (n->type == 63 || n->nuh_layer_id)
++            continue;
++        size = rpus[i] ? sizes[i] + 2 : n->raw_size;
++        if (size > INT_MAX - bytes - 4) {
++            ret = AVERROR(ENOMEM);
++            goto done;
++        }
++        bytes += 4 + size;
++    }
++    if (!bytes || (ret = av_new_packet(&converted, bytes)) < 0) {
++        if (!bytes) ret = AVERROR_INVALIDDATA;
++        goto done;
++    }
++    if ((ret = av_packet_copy_props(&converted, pkt)) < 0)
++        goto done;
++    if (cfg_data) {
++        uint8_t *out_cfg = av_packet_new_side_data(&converted, AV_PKT_DATA_DOVI_CONF,
++                                                   sizeof(s->output.cfg));
++        if (!out_cfg) {
++            ret = AVERROR(ENOMEM);
++            goto done;
++        }
++        memcpy(out_cfg, &s->output.cfg, sizeof(s->output.cfg));
++    }
++    bytes = 0;
++    for (int i = 0; i < s->packet.nb_nals; i++) {
++        const H2645NAL *n = &s->packet.nals[i];
++        if (n->type == 63 || n->nuh_layer_id)
++            continue;
++        AV_WB32(converted.data + bytes, 1);
++        bytes += 4;
++        if (rpus[i]) {
++            converted.data[bytes++] = 0x7c;
++            converted.data[bytes++] = 1;
++            memcpy(converted.data + bytes, rpus[i], sizes[i]);
++            bytes += sizes[i];
++        } else {
++            memcpy(converted.data + bytes, n->raw_data, n->raw_size);
++            bytes += n->raw_size;
++        }
++    }
++    av_packet_unref(pkt);
++    av_packet_move_ref(pkt, &converted);
++    s->converted_rpus += rpu_count;
++    ret = 0;
++done:
++    av_packet_unref(&converted);
++    if (rpus) for (int i = 0; i < s->packet.nb_nals; i++) av_free(rpus[i]);
++    av_free(rpus);
++    av_free(sizes);
++    return ret;
++}
++
++void ff_dovi_mel_flush(DOVIMELContext *s)
++{
++    ff_dovi_ctx_flush(&s->input);
++    ff_dovi_ctx_flush(&s->output);
++}
++
++void ff_dovi_mel_close(DOVIMELContext *s)
++{
++    ff_dovi_ctx_unref(&s->input);
++    ff_dovi_ctx_unref(&s->output);
++    ff_h2645_packet_uninit(&s->packet);
++}
+diff --git a/libavcodec/dovi_mel.h b/libavcodec/dovi_mel.h
+new file mode 100644
+index 0000000..f368e08
+--- /dev/null
++++ b/libavcodec/dovi_mel.h
+@@ -0,0 +1,26 @@
++/*
++ * Strict Dolby Vision Profile 7 MEL to Profile 8.1 conversion.
++ * This file is part of FFmpeg and is licensed under LGPL version 2.1 or later.
++ */
++#ifndef AVCODEC_DOVI_MEL_H
++#define AVCODEC_DOVI_MEL_H
++
++#include "dovi_rpu.h"
++#include "h2645_parse.h"
++#include "packet.h"
++
++typedef struct DOVIMELContext {
++    void *logctx;
++    DOVIContext input;
++    DOVIContext output;
++    H2645Packet packet;
++    uint64_t converted_rpus;
++} DOVIMELContext;
++
++int ff_dovi_mel_init(DOVIMELContext *s, void *logctx,
++                     const AVDOVIDecoderConfigurationRecord *cfg);
++int ff_dovi_mel_convert(DOVIMELContext *s, AVPacket *pkt);
++void ff_dovi_mel_flush(DOVIMELContext *s);
++void ff_dovi_mel_close(DOVIMELContext *s);
++
++#endif
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..9615776 100644
+index bc176d8..955b59e 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -30,14 +30,18 @@
+@@ -30,14 +30,19 @@
  #include "libavutil/mem.h"
  #include "libavutil/opt.h"
  #include "libavutil/intreadwrite.h"
@@ -51,6 +404,7 @@ index bc176d8..9615776 100644
  #include "codec_internal.h"
  #include "decode.h"
 +#include "dovi_rpu.h"
++#include "dovi_mel.h"
 +#include "h2645_parse.h"
  #include "h264_parse.h"
  #include "h264_ps.h"
@@ -58,7 +412,7 @@ index bc176d8..9615776 100644
  #include "hevc/parse.h"
  #include "hwconfig.h"
  #include "internal.h"
-@@ -45,6 +49,14 @@
+@@ -45,6 +50,14 @@
  #include "mediacodec_wrapper.h"
  #include "mediacodecdec_common.h"
  
@@ -73,11 +427,13 @@ index bc176d8..9615776 100644
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -59,8 +71,221 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,8 +72,224 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
 +    int native_dolby_vision;
++    int native_dolby_p7_mel;
++    int mel_conversion_failed;
 +    int native_hdr_output;
 +    int native_hdr_p7_base;
 +
@@ -86,6 +442,7 @@ index bc176d8..9615776 100644
 +     * lightweight side parser and join the resulting metadata back to output
 +     * frames by the presentation timestamp passed through MediaCodec. */
 +    DOVIContext dovi_ctx;
++    DOVIMELContext mel;
 +    H2645Packet dovi_pkt;
 +    MediaCodecDoviFrame *dovi_frames;
 +    int nb_dovi_frames;
@@ -295,7 +652,7 @@ index bc176d8..9615776 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -70,6 +295,12 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -70,6 +299,13 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -303,12 +660,13 @@ index bc176d8..9615776 100644
 +    mediacodec_dovi_flush(s);
 +    ff_h2645_packet_uninit(&s->dovi_pkt);
 +    ff_dovi_ctx_unref(&s->dovi_ctx);
++    ff_dovi_mel_close(&s->mel);
 +#endif
 +
      return 0;
  }
  
-@@ -245,6 +476,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -245,6 +481,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  
          avctx->profile = sps->ptl.general_ptl.profile_idc;
          avctx->level   = sps->ptl.general_ptl.level_idc;
@@ -325,7 +683,7 @@ index bc176d8..9615776 100644
  
          if ((ret = h2645_ps_to_nalu(vps->data, vps->data_size, &vps_data, &vps_data_size)) < 0 ||
              (ret = h2645_ps_to_nalu(sps->data, sps->data_size, &sps_data, &sps_data_size)) < 0 ||
-@@ -305,6 +546,144 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,6 +551,144 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -470,10 +828,13 @@ index bc176d8..9615776 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -315,6 +694,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -315,6 +699,15 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
  
++    if (s->native_dolby_p7_mel && !s->native_dolby_vision)
++        return AVERROR(EINVAL);
++
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    s->dovi_ctx.logctx = avctx;
 +    if (avctx->codec_id == AV_CODEC_ID_HEVC)
@@ -483,7 +844,7 @@ index bc176d8..9615776 100644
      if (s->use_ndk_codec < 0)
          s->use_ndk_codec = !av_jni_get_java_vm(avctx);
  
-@@ -351,6 +736,25 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -351,6 +744,31 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
          ret = hevc_set_extradata(avctx, format);
          if (ret < 0)
              goto done;
@@ -491,6 +852,12 @@ index bc176d8..9615776 100644
 +            const AVDOVIDecoderConfigurationRecord *cfg = &s->dovi_ctx.cfg;
 +            /* An explicit opt-in for direct Surface presentation only. Never
 +             * feed an already Dolby-processed frame to the GPU RPU mapper. */
++            if (s->native_dolby_p7_mel) {
++                ret = ff_dovi_mel_init(&s->mel, avctx, cfg);
++                if (ret < 0)
++                    goto done;
++                cfg = &s->mel.output.cfg;
++            }
 +            if ((cfg->dv_profile != 5 && cfg->dv_profile != 8) ||
 +                !cfg->rpu_present_flag || cfg->el_present_flag) {
 +                av_log(avctx, AV_LOG_ERROR,
@@ -509,7 +876,7 @@ index bc176d8..9615776 100644
          break;
  #endif
  #if CONFIG_MPEG2_MEDIACODEC_DECODER
-@@ -430,6 +834,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -430,6 +848,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      }
  
      ff_AMediaFormat_setString(format, "mime", codec_mime);
@@ -519,7 +886,7 @@ index bc176d8..9615776 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -486,6 +893,28 @@ done:
+@@ -486,12 +907,40 @@ done:
      return ret;
  }
  
@@ -535,7 +902,8 @@ index bc176d8..9615776 100644
 +    }
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
-+    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC && !s->native_hdr_output) {
++    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC && !s->native_hdr_output &&
++        !s->native_dolby_p7_mel) {
 +        ret = mediacodec_dovi_attach(avctx, s, frame);
 +        if (ret < 0)
 +            av_frame_unref(frame);
@@ -548,7 +916,18 @@ index bc176d8..9615776 100644
  static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -501,7 +930,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+     int ret;
+     ssize_t index;
+ 
++    // A conversion failure is permanent for this decoder instance. In
++    // particular, never send the unchanged failed FEL packet on the next call.
++    if (s->mel_conversion_failed)
++        return AVERROR_EXTERNAL;
++
+     /* In delay_flush mode, wait until the user has released or rendered
+        all retained frames. */
+     if (s->delay_flush && ff_mediacodec_dec_is_flushing(avctx, s->ctx)) {
+@@ -501,7 +950,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
      }
  
      /* poll for new frame */
@@ -557,7 +936,7 @@ index bc176d8..9615776 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -512,7 +941,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -512,7 +961,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
              if (index < 0) {
                  /* no space, block for an output frame to appear */
@@ -566,7 +945,7 @@ index bc176d8..9615776 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -558,12 +987,20 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -558,12 +1007,34 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
              if (ret < 0)
                  return ret;
@@ -580,32 +959,49 @@ index bc176d8..9615776 100644
          }
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
-+        ret = s->native_hdr_output
-+            ? mediacodec_hdr_base_packet(avctx, s, &s->buffered_pkt)
-+            : mediacodec_dovi_parse_packet(avctx, s, &s->buffered_pkt);
++        if (s->native_dolby_p7_mel) {
++            ret = ff_dovi_mel_convert(&s->mel, &s->buffered_pkt);
++            if (ret < 0) {
++                s->mel_conversion_failed = 1;
++                av_packet_unref(&s->buffered_pkt);
++                av_log(avctx, AV_LOG_ERROR, "P7 MEL conversion failed; original EL requires GPU playback\n");
++                return AVERROR_EXTERNAL;
++            }
++            if (ret >= 0 && s->mel.converted_rpus && !s->dovi_metadata_logged) {
++                av_log(avctx, AV_LOG_INFO, "P7 MEL to P8.1 active: RPU converted; zero-residual EL removed; original base video retained\n");
++                s->dovi_metadata_logged = 1;
++            }
++        } else {
++            ret = s->native_hdr_output
++                ? mediacodec_hdr_base_packet(avctx, s, &s->buffered_pkt)
++                : mediacodec_dovi_parse_packet(avctx, s, &s->buffered_pkt);
++        }
 +        if (ret < 0)
 +            return ret;
 +#endif
      }
  
      return AVERROR(EAGAIN);
-@@ -575,6 +1012,10 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -575,6 +1046,11 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    mediacodec_dovi_flush(s);
++    ff_dovi_mel_flush(&s->mel);
 +#endif
 +
      ff_mediacodec_dec_flush(avctx, s->ctx);
  }
  
-@@ -594,6 +1035,12 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
+@@ -594,6 +1070,14 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
  #define OFFSET(x) offsetof(MediaCodecH264DecContext, x)
  #define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
  static const AVOption ff_mediacodec_vdec_options[] = {
 +    { "native_dolby_vision", "Use the platform Dolby Vision decoder for direct Surface output",
 +            OFFSET(native_dolby_vision), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
++    { "native_dolby_p7_mel", "Strictly convert zero-residual P7 MEL to P8.1 for native Dolby output",
++            OFFSET(native_dolby_p7_mel), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
 +    { "native_hdr_output", "Present the compatible PQ (16) or HLG (18) base signal directly",
 +            OFFSET(native_hdr_output), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 18, VD },
 +    { "native_hdr_p7_base", "Allow P7 compatibility-ID-6 HDR10 base output, discarding RPU and EL",

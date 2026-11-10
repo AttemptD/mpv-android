@@ -98,3 +98,5 @@ Merge `upstream/master` into `codex/afuse` in each repository to sync. After
 testing and pushing an updated mpv core, update the outer project's `v_mpv`
 pin and patch export, then commit and push the outer repository. See the
 [sync record](../docs/upstream-sync-20261109.txt) for commands and validation.
+
+The phone P7 MEL to native P8.1 path, conservative GPU fallbacks and host/device regression procedure are documented in [tests/P7_MEL.txt](tests/P7_MEL.txt).
