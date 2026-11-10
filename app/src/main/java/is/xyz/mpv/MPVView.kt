@@ -16,6 +16,7 @@ import `is`.xyz.mpv.MPVLib.MpvFormat.MPV_FORMAT_STRING
 import kotlin.reflect.KProperty
 
 internal class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(context, attrs) {
+    private val tvPlayback = if (BuildConfig.TV_PLAYBACK) TvPlayback(this) else null
     override fun initOptions() {
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
 
@@ -103,6 +104,7 @@ internal class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(cont
         val cacheMegs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) 64 else 32
         MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
         MPVLib.setOptionString("demuxer-max-back-bytes", "${cacheMegs * 1024 * 1024}")
+        tvPlayback?.configure()
         //
         val screenshotDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         screenshotDir.mkdirs()
@@ -112,7 +114,13 @@ internal class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(cont
     override fun postInitOptions() {
         // we need to call write-watch-later manually
         MPVLib.setOptionString("save-position-on-quit", "no")
+        tvPlayback?.start()
     }
+
+    override fun refreshOutputCapabilities() { tvPlayback?.refreshDisplay() }
+    override fun onPlaybackSurfaceReady() { tvPlayback?.applyFrameRate() }
+    override fun onPlaybackDestroyed() { tvPlayback?.close() }
+    override fun surfaceVo(fallback: String): String = tvPlayback?.currentVo ?: fallback
 
     fun onPointerEvent(event: MotionEvent): Boolean {
         assert (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER))

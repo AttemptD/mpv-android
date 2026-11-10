@@ -1,0 +1,83 @@
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index 6572467412..b5e890220a 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -7297,6 +7297,14 @@ them.
+     Do not enable together with ``android-native-dolby``. Applications must
+     verify the matching display/decoder capability and implement GPU fallback.
+ 
++``--android-native-hdr-p7-base=<yes|no>``
++    Allow ``android-native-hdr=pq`` to present only the original HDR10 base
++    layer of Dolby Vision Profile 7 with compatibility ID 6 (default: no).
++    Requires the matching FFmpeg ``native_hdr_p7_base`` extension. Removes
++    RPU and enhancement-layer NAL units without re-encoding the base image.
++    This discards MEL/FEL and dynamic Dolby metadata; it is HDR10 fallback,
++    not complete Dolby Vision playback. Never applies to Profile 5.
++
+ ``--android-native-dolby-surface=<reference>``
+     JNI-only reference to the embedding application's ``NativeDolbySurface``
+     object. Like ``wid``, the reference is owned by the embedding application.
+diff --git a/options/options.c b/options/options.c
+index bb81c7f036..f889afd5a5 100644
+--- a/options/options.c
++++ b/options/options.c
+@@ -259,6 +259,7 @@ static const m_option_t mp_vo_opt_list[] = {
+ #endif
+ #if HAVE_ANDROID
+     {"android-native-dolby", OPT_BOOL(android_native_dolby), .flags = UPDATE_VO},
++    {"android-native-hdr-p7-base", OPT_BOOL(android_native_hdr_p7_base), .flags = UPDATE_VO},
+     {"android-native-hdr", OPT_CHOICE(android_native_hdr,
+         {"no", 0}, {"pq", 16}, {"hlg", 18}), .flags = UPDATE_VO},
+     {"android-native-dolby-surface", OPT_INT64(android_native_dolby_surface), .flags = UPDATE_VO},
+diff --git a/options/options.h b/options/options.h
+index 6b2c514eec..7916bb64e7 100644
+--- a/options/options.h
++++ b/options/options.h
+@@ -89,6 +89,7 @@ typedef struct mp_vo_opts {
+     bool android_hdr_output;
+     bool android_native_dolby;
+     int android_native_hdr;
++    bool android_native_hdr_p7_base;
+     int64_t android_native_dolby_surface;
+     bool android_dovi_yuv;
+     bool android_dovi_dual;
+diff --git a/player/command.c b/player/command.c
+index 86f91d5bef..78b89b4882 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -3173,6 +3173,7 @@ static int mp_property_android_native_dolby(void *ctx, struct m_property *prop,
+         {"decoder-failed", SUB_PROP_BOOL(state.decoder_failed)},
+         {"frames", SUB_PROP_INT64(state.frames)},
+         {"osd-updates", SUB_PROP_INT64(state.osd_updates)},
++        {"base-layer-only", SUB_PROP_BOOL(hdr && mpctx->opts->vo->android_native_hdr_p7_base)},
+         {"transfer", SUB_PROP_STR(hdr ? (mpctx->opts->vo->android_native_hdr == 18 ? "hlg" :
+                                            mpctx->opts->vo->android_native_hdr == 16 ? "pq" : "no") : "dolby")},
+         {0}
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index 32dc16eaa5..ed0502dd38 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -892,7 +892,10 @@ static void init_avctx(struct mp_filter *vd)
+ #if HAVE_ANDROID
+     if (native_surface && ctx->vo->opts->android_native_hdr) {
+         int transfer = ctx->vo->opts->android_native_hdr;
+-        bool compatible = !c->dovi || (c->dv_profile == 8 && !c->dv_el_present &&
++        bool p7_base = ctx->vo->opts->android_native_hdr_p7_base &&
++            c->dovi && c->dv_profile == 7 &&
++            c->dv_bl_compatibility_id == 6 && transfer == 16;
++        bool compatible = !c->dovi || p7_base || (c->dv_profile == 8 && !c->dv_el_present &&
+             c->dv_bl_compatibility_id == (transfer == 16 ? 1 : 4));
+         bool codec_ok = !strcmp(lavc_codec->name, "hevc_mediacodec") ||
+                         !strcmp(lavc_codec->name, "vp9_mediacodec") ||
+@@ -902,6 +905,11 @@ static void init_avctx(struct mp_filter *vd)
+             MP_ERR(vd, "Native HDR requires compatible PQ/HLG MediaCodec Surface decoding.\n");
+             goto error;
+         }
++        if (p7_base && av_opt_set_int(avctx, "native_hdr_p7_base", 1,
++                                    AV_OPT_SEARCH_CHILDREN) < 0) {
++            MP_ERR(vd, "This FFmpeg build cannot extract the P7 HDR10 base layer.\n");
++            goto error;
++        }
+         // A prior native Dolby decoder can report its processed PQ output in
+         // codec info. For P8 base presentation the compatibility ID, not that
+         // processed transfer, defines the original HDR10/HLG signal.

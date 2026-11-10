@@ -1,0 +1,15 @@
+<resources>
+    <string name="mpv_activity">TV mpv</string>
+    <string name="tv_native_output">原生 HDR / 杜比视频输出</string>
+    <string name="tv_native_output_summary">兼容的硬件视频直接输出，字幕使用独立图层。像素滤镜与着色器使用 GPU 输出。</string>
+    <string name="tv_platform_dolby">平台杜比 P5 解码兼容</string>
+    <string name="tv_platform_dolby_summary">即使显示器未声明杜比，也尝试已声明支持 P5 的系统杜比硬解。系统可能映射为 HDR10 或 SDR，不代表电视获得杜比直出能力。</string>
+    <string name="tv_match_frame_rate">匹配视频帧率</string>
+    <string name="tv_match_frame_rate_summary">向 Android 请求匹配视频帧率，切换时电视可能短暂黑屏。</string>
+    <string name="tv_hdr10_compatibility">HDR10 显示兼容</string>
+    <string name="tv_hdr10_compatibility_summary">仅用于已确认支持 HDR10、但盒子固件漏报 HDMI 能力的电视。请求 PQ 输出，SDR 显示器可能出现颜色异常。</string>
+    <string name="tv_p7_hdr10_base">P7 使用兼容 HDR10 基层</string>
+    <string name="tv_p7_hdr10_base_summary">显示链路不支持杜比时，将兼容 P7 播放为 HDR10。保留基层原分辨率，不使用增强层与杜比动态元数据。</string>
+    <string name="tv_stereo_compatibility">立体声音频兼容</string>
+    <string name="tv_stereo_compatibility_summary">盒子多声道输出卡顿时降混为立体声，开启后不再输出环绕声。</string>
+</resources>

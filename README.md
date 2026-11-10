@@ -4,6 +4,11 @@
 
 mpv-android is a video player for Android based on [libmpv](https://github.com/mpv-player/mpv).
 
+The local `codex/tv-mpv` branch adds an independently installable **TV mpv**
+flavor for TV playback experiments. See the [device results and build notes](docs/tv-mpv-20261110.txt).
+4K P5 platform decoding has passed short tests on Box R 4K Plus; this is not a
+guarantee of every HDR/Dolby format or of Dolby Vision output to the display.
+
 ## Features
 
 * Hardware and software video decoding

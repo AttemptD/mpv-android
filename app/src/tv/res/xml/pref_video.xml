@@ -1,0 +1,18 @@
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto">
+    <SwitchPreferenceCompat android:key="tv_native_output" android:defaultValue="true"
+        android:title="@string/tv_native_output" android:summary="@string/tv_native_output_summary" app:iconSpaceReserved="false" />
+    <SwitchPreferenceCompat android:key="tv_platform_dolby" android:defaultValue="false"
+        android:title="@string/tv_platform_dolby" android:summary="@string/tv_platform_dolby_summary" app:iconSpaceReserved="false" />
+    <SwitchPreferenceCompat android:key="tv_match_frame_rate" android:defaultValue="true"
+        android:title="@string/tv_match_frame_rate" android:summary="@string/tv_match_frame_rate_summary" app:iconSpaceReserved="false" />
+    <SwitchPreferenceCompat android:key="tv_hdr10_compatibility" android:defaultValue="false"
+        android:title="@string/tv_hdr10_compatibility" android:summary="@string/tv_hdr10_compatibility_summary" app:iconSpaceReserved="false" />
+    <SwitchPreferenceCompat android:key="tv_p7_hdr10_base" android:defaultValue="true"
+        android:title="@string/tv_p7_hdr10_base" android:summary="@string/tv_p7_hdr10_base_summary" app:iconSpaceReserved="false" />
+    <SwitchPreferenceCompat android:key="tv_stereo_compatibility" android:defaultValue="false"
+        android:title="@string/tv_stereo_compatibility" android:summary="@string/tv_stereo_compatibility_summary" app:iconSpaceReserved="false" />
+    <is.xyz.mpv.preferences.ScalerDialogPreference android:key="video_scale" android:title="@string/pref_video_upscale_title"
+        app:entries="@array/scaler_list" app:iconSpaceReserved="false" />
+    <is.xyz.mpv.preferences.ScalerDialogPreference android:key="video_downscale" android:title="@string/pref_video_downscale_title"
+        app:entries="@array/scaler_list" app:iconSpaceReserved="false" />
+</PreferenceScreen>

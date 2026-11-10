@@ -1,10 +1,12 @@
 package is.xyz.mpv;
 
 import android.annotation.TargetApi;
+import android.annotation.SuppressLint;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.os.Build;
 import android.view.Surface;
 import android.view.SurfaceControl;
 import android.view.SurfaceView;
@@ -28,12 +30,12 @@ public final class NativeDolbySurface {
         try {
             background = new SurfaceControl.Builder().setName("Afuse native Dolby background")
                     .setParent(parent).setBufferSize(1, 1).setFormat(PixelFormat.RGBA_8888)
-                    .setOpaque(true).setHidden(true).build();
+                    .setOpaque(true).build();
             video = new SurfaceControl.Builder().setName("Afuse native Dolby video")
-                    .setParent(parent).setBufferSize(1, 1).setOpaque(true).setHidden(true).build();
+                    .setParent(parent).setBufferSize(1, 1).setOpaque(true).build();
             captions = new SurfaceControl.Builder().setName("Afuse native Dolby captions")
                     .setParent(parent).setBufferSize(1, 1).setFormat(PixelFormat.RGBA_8888)
-                    .setOpaque(false).setHidden(true).build();
+                    .setOpaque(false).build();
             blackSurface = new Surface(background);
             decodedSurface = new Surface(video);
             subtitleSurface = new Surface(captions);
@@ -43,7 +45,7 @@ public final class NativeDolbySurface {
             try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
                 tx.setLayer(background, 0).setLayer(video, 1).setLayer(captions, 2).apply();
             }
-        } catch (RuntimeException error) {
+        } catch (RuntimeException | LinkageError error) {
             if (blackSurface != null) blackSurface.release();
             if (decodedSurface != null) decodedSurface.release();
             if (subtitleSurface != null) subtitleSurface.release();
@@ -59,7 +61,18 @@ public final class NativeDolbySurface {
     public synchronized Surface getVideoSurface() { return videoSurface; }
     public synchronized Surface getCaptionSurface() { return captionSurface; }
 
+    /** Hint the decoder layer, which can be presented independently of the UI. */
+    public synchronized void setFrameRate(float rate) {
+        if (released || Build.VERSION.SDK_INT < 30) return;
+        if (Build.VERSION.SDK_INT >= 31)
+            videoSurface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+        else
+            videoSurface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+    }
+
     /** Called on the MPV VO thread using mpv's crop, zoom, aspect and OSD geometry. */
+    @SuppressLint("WrongConstant") // The native setGeometry entry point consumes buffer-transform bits.
     public synchronized void setGeometry(int sx0, int sy0, int sx1, int sy1,
             int dx0, int dy0, int dx1, int dy1, int rotation, int width, int height,
             int bufferWidth, int bufferHeight) {
@@ -91,6 +104,13 @@ public final class NativeDolbySurface {
             transform = 4; // NATIVE_WINDOW_TRANSFORM_ROT_90
             x = dx0 - xs * sy0; y = dy0 + ys * sx1;
         }
+        // setPosition is public only from API 33. On older releases put the
+        // translation into setGeometry's destination, cancelling its unscaled
+        // rotation offset and the source-crop offset before rounding to pixels.
+        int offsetX = transform == 4 ? sh : transform == 3 ? sw : 0;
+        int offsetY = transform == 7 ? sw : transform == 3 ? sh : 0;
+        int left = Build.VERSION.SDK_INT >= 33 ? 0 : Math.round(x + xs * sx0 - offsetX);
+        int top = Build.VERSION.SDK_INT >= 33 ? 0 : Math.round(y + ys * sy0 - offsetY);
         try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
             // Surface(SurfaceControl) uses a child BLAST queue on newer Android.
             // Its default size must match the producer, or it first scales each
@@ -99,9 +119,10 @@ public final class NativeDolbySurface {
                     .setBufferSize(captionControl, width, height)
                     .setGeometry(backgroundControl, new Rect(0, 0, 1, 1), screen, Surface.ROTATION_0)
                     .setGeometry(videoControl, new Rect(sx0, sy0, sx1, sy1),
-                            new Rect(0, 0, frameWidth, frameHeight), transform)
-                    .setPosition(videoControl, x, y)
-                    .setGeometry(captionControl, screen, screen, Surface.ROTATION_0).apply();
+                            new Rect(left, top, left + frameWidth, top + frameHeight), transform)
+                    .setGeometry(captionControl, screen, screen, Surface.ROTATION_0);
+            if (Build.VERSION.SDK_INT >= 33) tx.setPosition(videoControl, x, y);
+            tx.apply();
         }
     }
 

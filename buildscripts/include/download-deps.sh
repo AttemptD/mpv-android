@@ -135,4 +135,5 @@ apply_pinned_patch libplacebo "$v_libplacebo" "$PATCHROOT/libplacebo-upstream-20
 # The mpv fork commit already contains the complete local implementation.
 # Keep its patch as an export, without applying it again to committed sources.
 require_revision mpv "$v_mpv"
+apply_pinned_patch mpv "$v_mpv" "$PATCHROOT/mpv-tv-native-p7-base.patch"
 cd ..

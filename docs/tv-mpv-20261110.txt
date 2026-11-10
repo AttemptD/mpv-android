@@ -1,0 +1,116 @@
+TV mpv 电视播放实验（2026-11-10）
+
+状态
+独立本地分支 codex/tv-mpv，基于当前 android-native-dolby/HDR 基线。
+新增 tv flavor，包名 is.xyz.mpv.tv，名称 TV mpv，最低 Android 10。
+测试包已安装至已连接的 Box R 4K Plus；未替换正式 AfuseKt/AfuseKtV。
+AfuseKtV 当前用户的界面修改未改动。当前不是“任何视频均流畅”的完成版。
+
+已验证的改善
+在 Android 12 / API 31、32 位 Box R 4K Plus 上，启用视频设置中的
+“平台杜比 P5 解码兼容”，可让真实声明支持 P5 的系统 Dolby 解码器接管
+P5，保留独立视频/字幕 Surface，绕过应用的 GPU Dolby 映射。
+该开关默认关闭；普通原生 Dolby 仍检查显示能力，P8 不借此绕过显示检查。
+本次已在盒子上的独立 TV mpv 测试包开启 P5 兼容，源码默认值仍为关闭。
+系统可能将结果处理为 HDR10/SDR；此开关不代表电视获得 Dolby Vision。
+
+测试                                  结果
+4K P5，3840x1616/24，无音频             11.002 秒窗口比率 0.99979，0/0 掉帧
+同源 4K P5 + 原 EAC3 5.1 + ASS          19.003 秒窗口比率 0.99983，23.996 提交帧/秒，0/0 掉帧
+上述带音轨片段的字幕/恢复               暂停字幕重绘与恢复时钟通过；重复精确定位不稳定
+4K SDR H.264 合成对照，3840x2160/24      产品 gpu-next 路径比率 0.99977，0/0 掉帧
+1080p SDR 合成对照（仅诊断 embed）        比率 0.99981，0/0 掉帧
+
+0/0 分别为解码和渲染掉帧。P5 带音轨测试实际输出 48kHz float PCM 5.1，
+没有强制立体声，也未重新编码视频。提交帧率不等同于电视每帧实际扫描输出。
+SurfaceFlinger 显示 P5 视频缓冲 3840x1616，对应物理视频区域 3840x1616，
+DEVICE 合成且 forceClientComposition=false；字幕独立，截图确实包含视频和黄色 ASS。
+该次视频层 dataspace 为 BT2020，未被系统报告为 Dolby/PQ 直出。
+未现场确认电视最终 HDR 模式或做标准色彩测量，未做全片/温控/网络验证。
+
+原始结果（本机临时目录，不提交媒体/截图/日志）
+P5 无音频：/private/tmp/tv-mpv-amgb6ktk/
+P5 + EAC3 5.1：/private/tmp/tv-mpv-4psq6yl7/
+最终包再次确认 P5 + 5.1 连续播放：/private/tmp/tv-mpv-ultzrgsj/（比率 0.99983，0/0 掉帧）
+P5 首轮暂停定位与字幕：/private/tmp/tv-mpv-oa81gdqz/
+P5 重复定位失败：/private/tmp/tv-mpv-688riz99/、/private/tmp/tv-mpv-gkziasuo/
+1080p SDR 对照：/private/tmp/tv-mpv-qej3j5fl/
+4K SDR 产品路径对照：/private/tmp/tv-mpv-so9qvjm1/
+
+尚未解决
+P5 暂停后的精确定位存在偶发偏移：请求 3 秒/2 秒时，曾落到约 6.388 秒。
+10 秒向前定位、暂停字幕显隐、恢复播放通过。曾测试 hr-seek-framedrop=no，
+单次命中约 3.013 秒，但重复定位仍失败，因此未将该参数作为产品修复。
+这些定位结果来自复制的短片，尚未区分开放 GOP/样片索引与厂商解码器刷新行为。
+P8.1 原生 HDR、普通 HDR10、P7 HDR10 基层在本轮显示状态下会在数帧后停滞。
+额外强制 P8 系统 Dolby 解码也未通过；没有把它做成生产兼容开关。
+零掉帧但时间不推进不算通过；采集器同时检查时钟比率、提交帧率和超时。
+P7 原始 FEL 样片能进入新基层路径并显示首帧，不能据此宣称流畅播放或完整 FEL。
+
+本轮开始的 WindowManager 历史覆盖信息曾含 LG HDR 4K / HDR10，但实时
+Display 与 SurfaceFlinger 后续均报告 HDR 类型为空。合成器的 HWC Support
+为 hdr10=false、hlg=false、dv=false，PQ 视频层被 forceClientComposition=true
+强制交给 GPU。该现象与停滞同时出现，是下一步排查方向，尚未证明唯一根因。
+盒子固定在 3840x2160/59.94Hz；请求帧率不代表系统一定切换成功。
+
+独立调试探针在 HEVC Main10、Dolby P5、P8 三种解码器配置后读取 inputFormat：
+均没有声明支持 KEY_COLOR_TRANSFER_REQUEST=SDR_VIDEO。
+因此没有把未经验证的硬件 HDR→SDR 请求加入生产播放链路。
+探针结果：/private/tmp/tv-tonemap-probe.json。
+未修改盒子全局 HDR/HDMI 设置；需要确认电视开机、输入端 HDR/增强模式以及固件行为。
+系统 debuggerd 拒绝非 root 栈转储；本轮没有取得可符号化的原生阻塞栈。
+
+实现
+1. 按解码器与显示器分别判断 P5/P8、HEVC/VP9/AV1 PQ/HLG，API 34 起按当前模式查询。
+2. TV 专用 Lua 策略复用手机端已验证的原生输出/有界失败恢复和 P7 性能策略。
+   手动 SW/copy-back、像素滤镜和 shader 保持 GPU；原生视频保留独立 SDR 字幕层。
+3. 修复 Android 12 上不存在的 Builder.setHidden() 调用，使用默认隐藏状态；
+   API 29–32 用 setGeometry 的目标矩形补偿旋转/裁剪偏移，避免调用 API 33 setPosition。
+   新 Android 继续使用既有精确浮点位置。90/270 度电视实机旋转未在本轮覆盖。
+4. 匹配内容帧率，向视频 Surface 提示精确小数 FPS，暂停/结束清除；
+   显示变化时更新 mpv 的 display-fps-override 和能力，避免沿用启动时刷新率。
+5. 压缩包缓存按 Java heap 档位设为前向 64/128/256MiB、回看 16/32MiB。
+   当前盒子 heap=256MiB，使用 128+32MiB。未声称可弥补持续网络吞吐不足。
+6. 立体声音频兼容为可选设置，默认关闭；开启会失去环绕声。
+7. HDR10 显示兼容默认关闭，仅供已确认 HDR10 显示器但固件漏报时使用；
+   实测在本轮状态下强制 PQ 仍停滞，不建议以此当作修复。
+8. P7 HDR10 基层只接受 P7 + compatibility ID 6 + BL 的明确组合，且需主机策略开启。
+   FFmpeg 去掉 RPU/type 62 与 EL/type 63/非基层 NAL，复制原图像 NAL，不重新编码。
+   EL-only 包不会被当作 EOS。P5 不会被当作 HDR10 基层。
+   新核心选项 android-native-hdr-p7-base 默认 no；TV 仅在非 Dolby 显示链路允许回退。
+   状态 base-layer-only 与模式 native-hdr-p7-base 明确标识失去 EL 和动态元数据。
+
+构建与检查
+mpv 固定基线 f12421e85ae06a821a6ccaf53680b41fc155d204，加 mpv-tv-native-p7-base.patch。
+FFmpeg 固定基线 d32b387f2b0a484599d4587d651891f0c63c4238，加完整导出补丁。
+两份补丁已从各固定基线重放并逐文件比较，也在现有树连续两次应用检查通过。
+NDK r29 + 现有依赖缓存重建四 ABI 的 FFmpeg/mpv 与 JNI；未做全依赖冷构建。
+48 个原生库检查动态依赖；arm64/x86_64 的 LOAD 段均满足至少 16KB 对齐。
+完整库摘要与补丁摘要：docs/tv-mpv-native-build.json。
+
+  # 对 armv7l / arm64 / x86 / x86_64 分别执行
+  MPV_ANDROID_NDK=/path/to/android-ndk-r29 cores=8 bash buildscripts/buildAfusekt.sh -n --arch armv7l ffmpeg
+  MPV_ANDROID_NDK=/path/to/android-ndk-r29 cores=8 bash buildscripts/buildAfusekt.sh -n --arch armv7l mpv
+  # 按 buildscripts/scripts/mpv-android.sh 的 PREFIX32/PREFIX64/PREFIX_X86/PREFIX_X64 重建 JNI
+  ./gradlew :app:assembleTvDebug :app:compileDefaultDebugKotlin :app:lintTvDebug
+  lua buildscripts/tests/tv-native-policy-test.lua .
+
+最终使用仓库固定 Gradle 9.4.1 / AGP 9.2.1 构建和 lint 通过。
+最初的本地缓存工具链覆盖仅用于启动调试，已由标准构建验证替代。
+Lua 原生策略 67 条断言通过；全部 Lua/Python 测量脚本语法检查通过。
+TV 分支的语言新增为英语/简体中文，其他语言使用英语回退。
+
+复现
+  adb -s DEVICE install --no-streaming -r app/build/outputs/apk/tv/debug/app-tv-armeabi-v7a-debug.apk
+  python3 buildscripts/tests/run-tv-benchmark.py DEVICE /data/local/tmp/tv-lxh-p5-eac3-30s.mp4 --audio auto --platform-dolby --duration 20
+  # 在相同命令加 --lifecycle 测试暂停定位与字幕重绘
+
+采集器只操作独立 is.xyz.mpv.tv，保存并恢复其 mpv.conf、测量脚本及偏好。
+超时返回 2、生命周期失败返回 3、速度不实时返回 4，保留部分采样用于诊断。
+--output embed 和 --force-dolby 仅用于独立诊断，不能作为产品完整字幕/HDR/Dolby 保证。
+
+实现依据
+https://developer.android.com/reference/android/view/SurfaceControl.Builder
+https://android.googlesource.com/platform/frameworks/native/+/85b74b7e07/libs/gui/SurfaceComposerClient.cpp
+https://developer.android.com/media/optimize/performance/frame-rate
+https://developer.android.com/reference/android/media/MediaFormat#KEY_COLOR_TRANSFER_REQUEST

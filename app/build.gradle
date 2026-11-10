@@ -13,6 +13,7 @@ android {
 
         versionCode 48
         versionName "2026-09-17-release"
+        buildConfigField 'boolean', 'TV_PLAYBACK', 'false'
 
         vectorDrawables.useSupportLibrary = true
 
@@ -34,12 +35,20 @@ android {
             versionNameSuffix "-allstorage"
             minSdkVersion 30
         }
+        tv {
+            applicationIdSuffix '.tv'
+            versionNameSuffix '-tv'
+            minSdkVersion 29
+            buildConfigField 'boolean', 'TV_PLAYBACK', 'true'
+        }
     }
 
     buildFeatures {
         viewBinding = true
         buildConfig = true
     }
+
+    sourceSets.main.jniLibs.srcDirs = [providers.gradleProperty('mpvNativeLibsDir').getOrElse('src/main/jniLibs')]
 
     buildTypes {
         release {

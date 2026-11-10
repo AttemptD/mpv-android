@@ -1,0 +1,644 @@
+{
+  "date": "2026-11-10",
+  "branch": "codex/tv-mpv",
+  "status": "experimental",
+  "mpv_base_revision": "f12421e85ae06a821a6ccaf53680b41fc155d204",
+  "ffmpeg_base_revision": "d32b387f2b0a484599d4587d651891f0c63c4238",
+  "patches": {
+    "mpv-tv-native-p7-base.patch": "c9771c2e90a17a728a47df43939add29058cac425fa01d6fff63f1c392b6fb63",
+    "ffmpeg-upstream-20261109.patch": "a7cb6e6ff5024647121fc39958ae53c44796548a6316f637a49e14831ed2038e"
+  },
+  "abis": {
+    "armeabi-v7a": {
+      "libavcodec.so": {
+        "bytes": 11783512,
+        "sha256": "957e46687ce3f7191260f4b702ca230b319a80e374c4e127b6658da974bb1295",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavdevice.so": {
+        "bytes": 7000,
+        "sha256": "15704d57cab8e52dc991482ef392d3de3931ee78faf7db8baa6e044e323d6a3b",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libavfilter.so": {
+        "bytes": 3463220,
+        "sha256": "d7965f7874f009541e44fed8b88f1a67eb984f3b651ffacbe69761eee958a754",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavformat.so": {
+        "bytes": 3123144,
+        "sha256": "fe4527e504607a1e2f8d2d84d276ac23303bc8364f368561aa65f5790e38738c",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavutil.so": {
+        "bytes": 653104,
+        "sha256": "ed4838393001dd54890b163bd5f4a347964cbca44c91276bc98a15f3334a45e9",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libbluray.so": {
+        "bytes": 270860,
+        "sha256": "fe713405b08797a0afbc4ab91a4b4491f052fb482bc4055f5c638f4b936d564d",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libc++_shared.so": {
+        "bytes": 7422084,
+        "sha256": "7ce65fd0fdd49236bc2ee618f6968dbb3fca46434845f563f2bb4c994878853e",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libmpv.so": {
+        "bytes": 7770584,
+        "sha256": "afe36d29cb67f264e14ce4629c61bae743004bd02b6f5c114b96431806821455",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libplayer.so": {
+        "bytes": 25804,
+        "sha256": "055f0db291ac36c080865d4d83a72faee89f65d4af1cf0dc0fbdc8bb43323438",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libsmb2.so": {
+        "bytes": 235728,
+        "sha256": "fc2e8675fcac02f4fecd74cb498b312e38e92b901a0e34c562320d0a56312941",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libswresample.so": {
+        "bytes": 90136,
+        "sha256": "697d32e623f577389eca0193234de176ff8d91e6faf6bb31883901990a4f92f2",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libswscale.so": {
+        "bytes": 830928,
+        "sha256": "61aa4e7bb455cd03bfbc1e58c72b428e76c85629e9c568431f641c2322c04260",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      }
+    },
+    "arm64-v8a": {
+      "libavcodec.so": {
+        "bytes": 12329680,
+        "sha256": "f2b939e5ec320229874a5004c38c152ae55705e9837d89e3fab3c0e7255a4945",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavdevice.so": {
+        "bytes": 9088,
+        "sha256": "55f6fdd25f4af424533c6431e57d74b84bba5b08aad088e34900c9dacd33ac4f",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libavfilter.so": {
+        "bytes": 4274952,
+        "sha256": "b4e232323662c24fdc68399aa679dda6e827dec91e4c104a75d1e95b8c5679c9",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavformat.so": {
+        "bytes": 3370744,
+        "sha256": "57d150a70470120dce0233ec50272c134746f24b590f28a4a4c16714ed723ff8",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavutil.so": {
+        "bytes": 740152,
+        "sha256": "0b93cf9ee0ea4029ea4d5396ce44b64d265613a3ef558dc5ec52c5239beceafd",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libbluray.so": {
+        "bytes": 288304,
+        "sha256": "e8733338e303f354ff3641b86e72a9598a7af653e77757759d4af8db6321c558",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libc++_shared.so": {
+        "bytes": 9290184,
+        "sha256": "0c52cfab2df0d957d8b346a2bdc5ae8d71feca2591924d77e1cd724d5bf74352",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libmpv.so": {
+        "bytes": 8591472,
+        "sha256": "2c78245f4e6e132d0a496959e613828f1e43f51ededf329d8dc7ba39ce7642ea",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libplayer.so": {
+        "bytes": 28232,
+        "sha256": "6a4bb2968ab58ea9b728f5df84580ca48e3a5953ed4c381db52dccf1f279daf0",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libsmb2.so": {
+        "bytes": 371488,
+        "sha256": "78e4e330f4714dd04f98a2efdc035bea81f32c9d1f62400daaec9d8ddfc8ca76",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libswresample.so": {
+        "bytes": 96632,
+        "sha256": "bb585c5576bd257a0caf7436b8da988c76a047f2c627cfe848dd7ad0d088d2c3",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libswscale.so": {
+        "bytes": 1234032,
+        "sha256": "b15728b73bef849d5e54d192549beccfb2c888d51c668c1fe1b170876951c4ac",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      }
+    },
+    "x86": {
+      "libavcodec.so": {
+        "bytes": 14049560,
+        "sha256": "e7990915266970b017896fb9343febf0ca947e8a55feae6d7100d5477991cc68",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavdevice.so": {
+        "bytes": 7960,
+        "sha256": "40d333e4adcd0884592d0c686cac7530c1abddc93e95da590f72ee917e0c6c7d",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libavfilter.so": {
+        "bytes": 4761276,
+        "sha256": "43fb9b917ca6ec344c1d772f527847d39a80c954a36a823d8ee2e8b978ef073e",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavformat.so": {
+        "bytes": 3436292,
+        "sha256": "7ee2b4bf0d81a2ad7a0a1e7829bda8126661dc4ba826d551febbc918ae00ce27",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavutil.so": {
+        "bytes": 744368,
+        "sha256": "5d27a0c6c903447411c0b2480317bf6b06a83d1ff104af2bf1b4870086894683",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libbluray.so": {
+        "bytes": 297460,
+        "sha256": "17a93ff5b960b4d5ef1932bfd702b128c46f2eed903f054e15871d8ac324dba4",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libc++_shared.so": {
+        "bytes": 7463420,
+        "sha256": "3553e4dfd7c62f16862861ebd716636df7606b37b2c59a121314507e627df581",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libmpv.so": {
+        "bytes": 8748364,
+        "sha256": "f78820a8fe981f6cb8f4feba63d668f51c0dccb6417191056867c11ebb912a73",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libplayer.so": {
+        "bytes": 24740,
+        "sha256": "b67f394c22720e482f625b8ca7e9fc207f896696a53cd9d75f068643b7ca29f3",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libsmb2.so": {
+        "bytes": 412256,
+        "sha256": "dc4f5efa1bb7b600eca631045333d236a37d3970bc909cd158e2492e4a8a6d73",
+        "load_alignment": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "libswresample.so": {
+        "bytes": 108872,
+        "sha256": "5dbb7571c2a611c4f9111d7f6007191e370b79378c07f735b8e9ee67b772dc44",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libswscale.so": {
+        "bytes": 1358804,
+        "sha256": "cfdb8ae5b0c3275606f1668eef78b55a9baa45b522f7f4abbda6820b56903452",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      }
+    },
+    "x86_64": {
+      "libavcodec.so": {
+        "bytes": 16501448,
+        "sha256": "e25d719a2815eb45bff0988fe3038d2785d724755191b893b9b8945eaa6715ac",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavdevice.so": {
+        "bytes": 9104,
+        "sha256": "814a2306fa8d65816473c51eeeeef8184512e1821e21a9288fdc270c5543bd20",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libavfilter.so": {
+        "bytes": 5363488,
+        "sha256": "0f77afd1a5a58c0c8ba27f8b43d4f1e71dbf4819353db4f0b52eba9830e30b29",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavformat.so": {
+        "bytes": 3453528,
+        "sha256": "f1a85ede0841599600ad108573ade186def32479bb34d0a5255db3f59f2e3541",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libavutil.so": {
+        "bytes": 891968,
+        "sha256": "560821684427db6b262c6eb19c19f209306fb1fbd8537176e5a329e5c56bc56e",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libbluray.so": {
+        "bytes": 293336,
+        "sha256": "b4222464d0e4d1c3f5a7550f3557a5f7d619d4f197aa5480772f5f466a2306af",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libc++_shared.so": {
+        "bytes": 9015544,
+        "sha256": "e28cb9e0f456caf8498d0e8562b3ac3f73bf78c07555a52b5602396f240abec3",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libmpv.so": {
+        "bytes": 8742264,
+        "sha256": "1d9a3b02dd79da80b4664947ba1ae8581f3ec443d281a23f16821afc4bb30375",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libplayer.so": {
+        "bytes": 27552,
+        "sha256": "6a30daea047fe3b63d42bc0d37a13fb3d4f877e0c04fe132a2ca6857c38d757f",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libsmb2.so": {
+        "bytes": 359968,
+        "sha256": "0066e5af417bd412e4111f23314492487950280ec361fa571541153c5cb7384f",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      },
+      "libswresample.so": {
+        "bytes": 137864,
+        "sha256": "857aa4bdcbfc90f2ac78ac44f3d3d75da52425195a327c989b75b0982449678d",
+        "load_alignment": [
+          16384,
+          16384
+        ]
+      },
+      "libswscale.so": {
+        "bytes": 1676200,
+        "sha256": "ffd7a055817af50837f0b565a4bd3198c4ffd122bf6a8189d8671f3cef073753",
+        "load_alignment": [
+          16384,
+          16384,
+          16384
+        ]
+      }
+    }
+  },
+  "abi_records": "JNI input libraries before AGP stripping; APK records below describe packaged runtime bytes",
+  "apk": {
+    "file": "app/build/outputs/apk/tv/debug/app-tv-universal-debug.apk",
+    "sha256": "10e5682652473141b4db94d6a1e84170629677e3f81db9e05b3eedf817a2c469",
+    "libraries": {
+      "lib/arm64-v8a/libavcodec.so": {
+        "bytes": 12329680,
+        "sha256": "f2b939e5ec320229874a5004c38c152ae55705e9837d89e3fab3c0e7255a4945"
+      },
+      "lib/arm64-v8a/libavdevice.so": {
+        "bytes": 9088,
+        "sha256": "55f6fdd25f4af424533c6431e57d74b84bba5b08aad088e34900c9dacd33ac4f"
+      },
+      "lib/arm64-v8a/libavfilter.so": {
+        "bytes": 4274952,
+        "sha256": "b4e232323662c24fdc68399aa679dda6e827dec91e4c104a75d1e95b8c5679c9"
+      },
+      "lib/arm64-v8a/libavformat.so": {
+        "bytes": 3370744,
+        "sha256": "57d150a70470120dce0233ec50272c134746f24b590f28a4a4c16714ed723ff8"
+      },
+      "lib/arm64-v8a/libavutil.so": {
+        "bytes": 740152,
+        "sha256": "0b93cf9ee0ea4029ea4d5396ce44b64d265613a3ef558dc5ec52c5239beceafd"
+      },
+      "lib/arm64-v8a/libbluray.so": {
+        "bytes": 288304,
+        "sha256": "e8733338e303f354ff3641b86e72a9598a7af653e77757759d4af8db6321c558"
+      },
+      "lib/arm64-v8a/libc++_shared.so": {
+        "bytes": 1374336,
+        "sha256": "c4c2fe5cbcb1fba0003a31fc7ab29a9bb12df6cc187ec45a806462540e83d93b"
+      },
+      "lib/arm64-v8a/libmpv.so": {
+        "bytes": 8591472,
+        "sha256": "2c78245f4e6e132d0a496959e613828f1e43f51ededf329d8dc7ba39ce7642ea"
+      },
+      "lib/arm64-v8a/libplayer.so": {
+        "bytes": 28232,
+        "sha256": "6a4bb2968ab58ea9b728f5df84580ca48e3a5953ed4c381db52dccf1f279daf0"
+      },
+      "lib/arm64-v8a/libsmb2.so": {
+        "bytes": 371488,
+        "sha256": "78e4e330f4714dd04f98a2efdc035bea81f32c9d1f62400daaec9d8ddfc8ca76"
+      },
+      "lib/arm64-v8a/libswresample.so": {
+        "bytes": 96632,
+        "sha256": "bb585c5576bd257a0caf7436b8da988c76a047f2c627cfe848dd7ad0d088d2c3"
+      },
+      "lib/arm64-v8a/libswscale.so": {
+        "bytes": 1234032,
+        "sha256": "b15728b73bef849d5e54d192549beccfb2c888d51c668c1fe1b170876951c4ac"
+      },
+      "lib/armeabi-v7a/libavcodec.so": {
+        "bytes": 11783512,
+        "sha256": "957e46687ce3f7191260f4b702ca230b319a80e374c4e127b6658da974bb1295"
+      },
+      "lib/armeabi-v7a/libavdevice.so": {
+        "bytes": 7000,
+        "sha256": "15704d57cab8e52dc991482ef392d3de3931ee78faf7db8baa6e044e323d6a3b"
+      },
+      "lib/armeabi-v7a/libavfilter.so": {
+        "bytes": 3463220,
+        "sha256": "d7965f7874f009541e44fed8b88f1a67eb984f3b651ffacbe69761eee958a754"
+      },
+      "lib/armeabi-v7a/libavformat.so": {
+        "bytes": 3123144,
+        "sha256": "fe4527e504607a1e2f8d2d84d276ac23303bc8364f368561aa65f5790e38738c"
+      },
+      "lib/armeabi-v7a/libavutil.so": {
+        "bytes": 653104,
+        "sha256": "ed4838393001dd54890b163bd5f4a347964cbca44c91276bc98a15f3334a45e9"
+      },
+      "lib/armeabi-v7a/libbluray.so": {
+        "bytes": 270860,
+        "sha256": "fe713405b08797a0afbc4ab91a4b4491f052fb482bc4055f5c638f4b936d564d"
+      },
+      "lib/armeabi-v7a/libc++_shared.so": {
+        "bytes": 963028,
+        "sha256": "af383654daf4cf0829615460419a180f84edd9d8bf51aa0f81ed0db811bf8491"
+      },
+      "lib/armeabi-v7a/libmpv.so": {
+        "bytes": 7770584,
+        "sha256": "afe36d29cb67f264e14ce4629c61bae743004bd02b6f5c114b96431806821455"
+      },
+      "lib/armeabi-v7a/libplayer.so": {
+        "bytes": 25804,
+        "sha256": "055f0db291ac36c080865d4d83a72faee89f65d4af1cf0dc0fbdc8bb43323438"
+      },
+      "lib/armeabi-v7a/libsmb2.so": {
+        "bytes": 235728,
+        "sha256": "fc2e8675fcac02f4fecd74cb498b312e38e92b901a0e34c562320d0a56312941"
+      },
+      "lib/armeabi-v7a/libswresample.so": {
+        "bytes": 90136,
+        "sha256": "697d32e623f577389eca0193234de176ff8d91e6faf6bb31883901990a4f92f2"
+      },
+      "lib/armeabi-v7a/libswscale.so": {
+        "bytes": 830928,
+        "sha256": "61aa4e7bb455cd03bfbc1e58c72b428e76c85629e9c568431f641c2322c04260"
+      },
+      "lib/x86/libavcodec.so": {
+        "bytes": 14049560,
+        "sha256": "e7990915266970b017896fb9343febf0ca947e8a55feae6d7100d5477991cc68"
+      },
+      "lib/x86/libavdevice.so": {
+        "bytes": 7960,
+        "sha256": "40d333e4adcd0884592d0c686cac7530c1abddc93e95da590f72ee917e0c6c7d"
+      },
+      "lib/x86/libavfilter.so": {
+        "bytes": 4761276,
+        "sha256": "43fb9b917ca6ec344c1d772f527847d39a80c954a36a823d8ee2e8b978ef073e"
+      },
+      "lib/x86/libavformat.so": {
+        "bytes": 3436292,
+        "sha256": "7ee2b4bf0d81a2ad7a0a1e7829bda8126661dc4ba826d551febbc918ae00ce27"
+      },
+      "lib/x86/libavutil.so": {
+        "bytes": 744368,
+        "sha256": "5d27a0c6c903447411c0b2480317bf6b06a83d1ff104af2bf1b4870086894683"
+      },
+      "lib/x86/libbluray.so": {
+        "bytes": 297460,
+        "sha256": "17a93ff5b960b4d5ef1932bfd702b128c46f2eed903f054e15871d8ac324dba4"
+      },
+      "lib/x86/libc++_shared.so": {
+        "bytes": 1255932,
+        "sha256": "1b9fba4282c5a043994aa023c0a274b580534c5d72916cae7b42bec4e1a27d70"
+      },
+      "lib/x86/libmpv.so": {
+        "bytes": 8748364,
+        "sha256": "f78820a8fe981f6cb8f4feba63d668f51c0dccb6417191056867c11ebb912a73"
+      },
+      "lib/x86/libplayer.so": {
+        "bytes": 24740,
+        "sha256": "b67f394c22720e482f625b8ca7e9fc207f896696a53cd9d75f068643b7ca29f3"
+      },
+      "lib/x86/libsmb2.so": {
+        "bytes": 412256,
+        "sha256": "dc4f5efa1bb7b600eca631045333d236a37d3970bc909cd158e2492e4a8a6d73"
+      },
+      "lib/x86/libswresample.so": {
+        "bytes": 108872,
+        "sha256": "5dbb7571c2a611c4f9111d7f6007191e370b79378c07f735b8e9ee67b772dc44"
+      },
+      "lib/x86/libswscale.so": {
+        "bytes": 1358804,
+        "sha256": "cfdb8ae5b0c3275606f1668eef78b55a9baa45b522f7f4abbda6820b56903452"
+      },
+      "lib/x86_64/libavcodec.so": {
+        "bytes": 16501448,
+        "sha256": "e25d719a2815eb45bff0988fe3038d2785d724755191b893b9b8945eaa6715ac"
+      },
+      "lib/x86_64/libavdevice.so": {
+        "bytes": 9104,
+        "sha256": "814a2306fa8d65816473c51eeeeef8184512e1821e21a9288fdc270c5543bd20"
+      },
+      "lib/x86_64/libavfilter.so": {
+        "bytes": 5363488,
+        "sha256": "0f77afd1a5a58c0c8ba27f8b43d4f1e71dbf4819353db4f0b52eba9830e30b29"
+      },
+      "lib/x86_64/libavformat.so": {
+        "bytes": 3453528,
+        "sha256": "f1a85ede0841599600ad108573ade186def32479bb34d0a5255db3f59f2e3541"
+      },
+      "lib/x86_64/libavutil.so": {
+        "bytes": 891968,
+        "sha256": "560821684427db6b262c6eb19c19f209306fb1fbd8537176e5a329e5c56bc56e"
+      },
+      "lib/x86_64/libbluray.so": {
+        "bytes": 293336,
+        "sha256": "b4222464d0e4d1c3f5a7550f3557a5f7d619d4f197aa5480772f5f466a2306af"
+      },
+      "lib/x86_64/libc++_shared.so": {
+        "bytes": 1337488,
+        "sha256": "683a1c7cd2f6829fd40bf805739166c5fce35235bf60d2c4e4a95e9f65a342ef"
+      },
+      "lib/x86_64/libmpv.so": {
+        "bytes": 8742264,
+        "sha256": "1d9a3b02dd79da80b4664947ba1ae8581f3ec443d281a23f16821afc4bb30375"
+      },
+      "lib/x86_64/libplayer.so": {
+        "bytes": 27552,
+        "sha256": "6a30daea047fe3b63d42bc0d37a13fb3d4f877e0c04fe132a2ca6857c38d757f"
+      },
+      "lib/x86_64/libsmb2.so": {
+        "bytes": 359968,
+        "sha256": "0066e5af417bd412e4111f23314492487950280ec361fa571541153c5cb7384f"
+      },
+      "lib/x86_64/libswresample.so": {
+        "bytes": 137864,
+        "sha256": "857aa4bdcbfc90f2ac78ac44f3d3d75da52425195a327c989b75b0982449678d"
+      },
+      "lib/x86_64/libswscale.so": {
+        "bytes": 1676200,
+        "sha256": "ffd7a055817af50837f0b565a4bd3198c4ffd122bf6a8189d8671f3cef073753"
+      }
+    }
+  }
+}

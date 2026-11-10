@@ -1,0 +1,16 @@
+<!-- Experimental TV strings currently support English and Simplified Chinese. -->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <string name="mpv_activity">TV mpv</string>
+    <string name="tv_native_output">Native HDR / Dolby video output</string>
+    <string name="tv_native_output_summary">Use compatible hardware video output with a separate subtitle layer. Pixel filters and shaders use GPU output.</string>
+    <string name="tv_platform_dolby">Platform Dolby P5 decoder compatibility</string>
+    <string name="tv_platform_dolby_summary">Try a declared P5 Dolby hardware decoder even without a Dolby display. The system may map to HDR10 or SDR; this does not enable Dolby Vision on your TV.</string>
+    <string name="tv_match_frame_rate">Match video frame rate</string>
+    <string name="tv_match_frame_rate_summary">Request the video frame rate from Android. Your TV may briefly go black when switching.</string>
+    <string name="tv_hdr10_compatibility">HDR10 display compatibility</string>
+    <string name="tv_hdr10_compatibility_summary">For a confirmed HDR10 TV when box firmware omits HDMI HDR capabilities. Requests PQ output; an SDR display may show incorrect colors.</string>
+    <string name="tv_p7_hdr10_base">P7 HDR10 base fallback</string>
+    <string name="tv_p7_hdr10_base_summary">On a display without Dolby Vision, play compatible P7 video as HDR10. Preserves base resolution; omits enhancement layer and Dolby dynamic metadata.</string>
+    <string name="tv_stereo_compatibility">Stereo audio compatibility</string>
+    <string name="tv_stereo_compatibility_summary">Downmix to stereo for boxes with multichannel audio underruns. Disables surround output.</string>
+</resources>

@@ -36,7 +36,7 @@ index 374bd5c..3772467 100755
  enabled libsoxr           && require libsoxr soxr.h soxr_create -lsoxr
  enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/sftp.h sftp_init
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..4bfe357 100644
+index bc176d8..9615776 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
 @@ -30,14 +30,18 @@
@@ -73,12 +73,13 @@ index bc176d8..4bfe357 100644
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -59,8 +71,220 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,8 +71,221 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
 +    int native_dolby_vision;
 +    int native_hdr_output;
++    int native_hdr_p7_base;
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    /* MediaCodec does not parse HEVC Dolby Vision NAL units itself. Keep a
@@ -294,7 +295,7 @@ index bc176d8..4bfe357 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -70,6 +294,12 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -70,6 +295,12 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -307,7 +308,7 @@ index bc176d8..4bfe357 100644
      return 0;
  }
  
-@@ -245,6 +475,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -245,6 +476,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  
          avctx->profile = sps->ptl.general_ptl.profile_idc;
          avctx->level   = sps->ptl.general_ptl.level_idc;
@@ -324,7 +325,7 @@ index bc176d8..4bfe357 100644
  
          if ((ret = h2645_ps_to_nalu(vps->data, vps->data_size, &vps_data, &vps_data_size)) < 0 ||
              (ret = h2645_ps_to_nalu(sps->data, sps->data_size, &sps_data, &sps_data_size)) < 0 ||
-@@ -305,6 +545,128 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,6 +546,144 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -350,8 +351,11 @@ index bc176d8..4bfe357 100644
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    if (avctx->codec_id == AV_CODEC_ID_HEVC && s->dovi_ctx.cfg.dv_profile) {
 +        const AVDOVIDecoderConfigurationRecord *cfg = &s->dovi_ctx.cfg;
-+        if (cfg->dv_profile != 8 || cfg->el_present_flag || !cfg->bl_present_flag ||
-+            cfg->dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4)) {
++        int p7_base = s->native_hdr_p7_base && cfg->dv_profile == 7 &&
++            cfg->dv_bl_signal_compatibility_id == 6 && s->native_hdr_output == 16;
++        if (!cfg->bl_present_flag || (!p7_base &&
++            (cfg->dv_profile != 8 || cfg->el_present_flag ||
++             cfg->dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4)))) {
 +            av_log(avctx, AV_LOG_ERROR, "Native HDR requires a compatible P8 base layer\n");
 +            return AVERROR(EINVAL);
 +        }
@@ -408,8 +412,12 @@ index bc176d8..4bfe357 100644
 +    mediacodec_dovi_update_config(avctx, s, pkt);
 +    if (!s->dovi_ctx.cfg.dv_profile)
 +        return 0;
-+    if (s->dovi_ctx.cfg.dv_profile != 8 || s->dovi_ctx.cfg.el_present_flag ||
-+        s->dovi_ctx.cfg.dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4))
++    const AVDOVIDecoderConfigurationRecord *cfg = &s->dovi_ctx.cfg;
++    int p7_base = s->native_hdr_p7_base && cfg->dv_profile == 7 &&
++        cfg->dv_bl_signal_compatibility_id == 6 && s->native_hdr_output == 16;
++    if (!cfg->bl_present_flag || (!p7_base &&
++        (cfg->dv_profile != 8 || cfg->el_present_flag ||
++         cfg->dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4))))
 +        return AVERROR_INVALIDDATA;
 +    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx, 4,
 +                               AV_CODEC_ID_HEVC, H2645_FLAG_SMALL_PADDING);
@@ -417,15 +425,23 @@ index bc176d8..4bfe357 100644
 +        return ret;
 +    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
 +        H2645NAL *n = &s->dovi_pkt.nals[i];
-+        if (n->nuh_layer_id)
++        if (n->nuh_layer_id && !p7_base)
 +            return AVERROR_INVALIDDATA;
-+        if (n->type == 62) { removed++; continue; }
++        if (n->type == 62 || (p7_base && (n->type == 63 || n->nuh_layer_id))) {
++            removed++;
++            continue;
++        }
 +        if (n->raw_size > INT_MAX - bytes - 4)
 +            return AVERROR(ENOMEM);
 +        bytes += 4 + n->raw_size;
 +    }
 +    if (!removed)
 +        return 0;
++    // An EL/RPU-only packet must not become a zero-sized EOS packet.
++    if (!bytes) {
++        av_packet_unref(pkt);
++        return 0;
++    }
 +    if ((ret = av_new_packet(&base, bytes)) < 0)
 +        return ret;
 +    if ((ret = av_packet_copy_props(&base, pkt)) < 0) {
@@ -435,7 +451,7 @@ index bc176d8..4bfe357 100644
 +    bytes = 0;
 +    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
 +        H2645NAL *n = &s->dovi_pkt.nals[i];
-+        if (n->type == 62) continue;
++        if (n->type == 62 || (p7_base && (n->type == 63 || n->nuh_layer_id))) continue;
 +        AV_WB32(base.data + bytes, 1);
 +        memcpy(base.data + bytes + 4, n->raw_data, n->raw_size);
 +        bytes += 4 + n->raw_size;
@@ -443,7 +459,8 @@ index bc176d8..4bfe357 100644
 +    av_packet_unref(pkt);
 +    av_packet_move_ref(pkt, &base);
 +    if (!s->dovi_metadata_logged) {
-+        av_log(avctx, AV_LOG_INFO, "P8 native HDR: removed Dolby RPU NAL units; compatible base video retained\n");
++        av_log(avctx, AV_LOG_INFO, "P%d native HDR: retained original base layer; removed Dolby RPU%s\n",
++               cfg->dv_profile, p7_base ? " and enhancement layer (HDR10 fallback only)" : "");
 +        s->dovi_metadata_logged = 1;
 +    }
 +    return 0;
@@ -453,7 +470,7 @@ index bc176d8..4bfe357 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -315,6 +677,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -315,6 +694,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
  
@@ -466,7 +483,7 @@ index bc176d8..4bfe357 100644
      if (s->use_ndk_codec < 0)
          s->use_ndk_codec = !av_jni_get_java_vm(avctx);
  
-@@ -351,6 +719,25 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -351,6 +736,25 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
          ret = hevc_set_extradata(avctx, format);
          if (ret < 0)
              goto done;
@@ -492,7 +509,7 @@ index bc176d8..4bfe357 100644
          break;
  #endif
  #if CONFIG_MPEG2_MEDIACODEC_DECODER
-@@ -430,6 +817,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -430,6 +834,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      }
  
      ff_AMediaFormat_setString(format, "mime", codec_mime);
@@ -502,7 +519,7 @@ index bc176d8..4bfe357 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -486,6 +876,28 @@ done:
+@@ -486,6 +893,28 @@ done:
      return ret;
  }
  
@@ -531,7 +548,7 @@ index bc176d8..4bfe357 100644
  static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -501,7 +913,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -501,7 +930,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
      }
  
      /* poll for new frame */
@@ -540,7 +557,7 @@ index bc176d8..4bfe357 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -512,7 +924,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -512,7 +941,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
              if (index < 0) {
                  /* no space, block for an output frame to appear */
@@ -549,7 +566,7 @@ index bc176d8..4bfe357 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -558,12 +970,20 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -558,12 +987,20 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
              if (ret < 0)
                  return ret;
@@ -572,7 +589,7 @@ index bc176d8..4bfe357 100644
      }
  
      return AVERROR(EAGAIN);
-@@ -575,6 +995,10 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -575,6 +1012,10 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -583,7 +600,7 @@ index bc176d8..4bfe357 100644
      ff_mediacodec_dec_flush(avctx, s->ctx);
  }
  
-@@ -594,6 +1018,10 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
+@@ -594,6 +1035,12 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
  #define OFFSET(x) offsetof(MediaCodecH264DecContext, x)
  #define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
  static const AVOption ff_mediacodec_vdec_options[] = {
@@ -591,6 +608,8 @@ index bc176d8..4bfe357 100644
 +            OFFSET(native_dolby_vision), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
 +    { "native_hdr_output", "Present the compatible PQ (16) or HLG (18) base signal directly",
 +            OFFSET(native_hdr_output), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 18, VD },
++    { "native_hdr_p7_base", "Allow P7 compatibility-ID-6 HDR10 base output, discarding RPU and EL",
++            OFFSET(native_hdr_p7_base), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
      { "delay_flush", "Delay flush until hw output buffers are returned to the decoder",
                       OFFSET(delay_flush), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
      { "ndk_codec", "Use MediaCodec from NDK",
