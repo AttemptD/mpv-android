@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.os.Build;
 import android.view.Surface;
 import android.view.SurfaceControl;
 import android.view.SurfaceView;
@@ -26,14 +27,15 @@ public final class NativeDolbySurface {
         SurfaceControl background = null, video = null, captions = null;
         Surface blackSurface = null, decodedSurface = null, subtitleSurface = null;
         try {
+            // SurfaceControl.Builder creates hidden layers until setVisible(true).
             background = new SurfaceControl.Builder().setName("Afuse native Dolby background")
                     .setParent(parent).setBufferSize(1, 1).setFormat(PixelFormat.RGBA_8888)
-                    .setOpaque(true).setHidden(true).build();
+                    .setOpaque(true).build();
             video = new SurfaceControl.Builder().setName("Afuse native Dolby video")
-                    .setParent(parent).setBufferSize(1, 1).setOpaque(true).setHidden(true).build();
+                    .setParent(parent).setBufferSize(1, 1).setOpaque(true).build();
             captions = new SurfaceControl.Builder().setName("Afuse native Dolby captions")
                     .setParent(parent).setBufferSize(1, 1).setFormat(PixelFormat.RGBA_8888)
-                    .setOpaque(false).setHidden(true).build();
+                    .setOpaque(false).build();
             blackSurface = new Surface(background);
             decodedSurface = new Surface(video);
             subtitleSurface = new Surface(captions);
@@ -81,15 +83,29 @@ public final class NativeDolbySurface {
         // supply the rotated scale and then set the correct crop translation.
         // Its matrix arguments also reverse the direction of the quarter turns.
         int transform = 0;
+        int rotationOffsetX = 0, rotationOffsetY = 0;
         if (angle == 90) {
             transform = 7; // NATIVE_WINDOW_TRANSFORM_ROT_270
             x = dx0 + xs * sy1; y = dy0 - ys * sx0;
+            rotationOffsetY = sw;
         } else if (angle == 180) {
             transform = 3; // NATIVE_WINDOW_TRANSFORM_ROT_180
             x = dx0 + xs * sx1; y = dy0 + ys * sy1;
+            rotationOffsetX = sw; rotationOffsetY = sh;
         } else if (angle == 270) {
             transform = 4; // NATIVE_WINDOW_TRANSFORM_ROT_90
             x = dx0 - xs * sy0; y = dy0 + ys * sx1;
+            rotationOffsetX = sh;
+        }
+        Rect frame = new Rect(0, 0, frameWidth, frameHeight);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // Position through setGeometry's destination frame on API 29–32.
+            // It adds the rotation offset and, since API 30, subtracts the scaled crop origin.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                x += xs * sx0;
+                y += ys * sy0;
+            }
+            frame.offset(Math.round(x) - rotationOffsetX, Math.round(y) - rotationOffsetY);
         }
         try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
             // Surface(SurfaceControl) uses a child BLAST queue on newer Android.
@@ -97,11 +113,13 @@ public final class NativeDolbySurface {
             // decoded/caption buffer into the original 1x1 placeholder.
             tx.setBufferSize(videoControl, bufferWidth, bufferHeight)
                     .setBufferSize(captionControl, width, height)
-                    .setGeometry(backgroundControl, new Rect(0, 0, 1, 1), screen, Surface.ROTATION_0)
-                    .setGeometry(videoControl, new Rect(sx0, sy0, sx1, sy1),
-                            new Rect(0, 0, frameWidth, frameHeight), transform)
-                    .setPosition(videoControl, x, y)
-                    .setGeometry(captionControl, screen, screen, Surface.ROTATION_0).apply();
+                    .setGeometry(backgroundControl, new Rect(0, 0, 1, 1), screen, Surface.ROTATION_0);
+            //noinspection WrongConstant -- setGeometry forwards the native transform bits above.
+            tx.setGeometry(videoControl, new Rect(sx0, sy0, sx1, sy1), frame, transform);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                tx.setPosition(videoControl, x, y);
+            }
+            tx.setGeometry(captionControl, screen, screen, Surface.ROTATION_0).apply();
         }
     }
 
