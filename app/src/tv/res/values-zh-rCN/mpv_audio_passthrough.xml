@@ -1,0 +1,4 @@
+<resources>
+    <string name="mpv_audio_passthrough_title">音频源码直通</string>
+    <string name="mpv_audio_passthrough_summary">音响支持时通过 HDMI 直通原始音轨。不支持、倍速或启用音频滤镜时使用 PCM。</string>
+</resources>

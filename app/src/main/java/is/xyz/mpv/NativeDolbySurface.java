@@ -17,7 +17,7 @@ import androidx.annotation.Keep;
 public final class NativeDolbySurface {
     private final SurfaceControl backgroundControl, videoControl, captionControl;
     private final Surface backgroundSurface, videoSurface, captionSurface;
-    private boolean released, visible;
+    private boolean released, visible, captionsOnly;
 
     public static NativeDolbySurface create(SurfaceView view) {
         return new NativeDolbySurface(view.getSurfaceControl());
@@ -45,7 +45,7 @@ public final class NativeDolbySurface {
             try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
                 tx.setLayer(background, 0).setLayer(video, 1).setLayer(captions, 2).apply();
             }
-        } catch (RuntimeException error) {
+        } catch (RuntimeException | LinkageError error) {
             if (blackSurface != null) blackSurface.release();
             if (decodedSurface != null) decodedSurface.release();
             if (subtitleSurface != null) subtitleSurface.release();
@@ -60,6 +60,16 @@ public final class NativeDolbySurface {
 
     public synchronized Surface getVideoSurface() { return videoSurface; }
     public synchronized Surface getCaptionSurface() { return captionSurface; }
+
+    /** Hint the decoder layer, which can be presented independently of the UI. */
+    public synchronized void setFrameRate(float rate) {
+        if (released || Build.VERSION.SDK_INT < 30) return;
+        if (Build.VERSION.SDK_INT >= 31)
+            videoSurface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+        else
+            videoSurface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+    }
 
     /** Called on the MPV VO thread using mpv's crop, zoom, aspect and OSD geometry. */
     public synchronized void setGeometry(int sx0, int sy0, int sx1, int sy1,
@@ -124,12 +134,30 @@ public final class NativeDolbySurface {
     }
 
     public synchronized void setVisible(boolean value) {
-        if (released || visible == value) return;
+        if (released || (visible == value && !captionsOnly)) return;
         try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
             tx.setVisibility(backgroundControl, value).setVisibility(videoControl, value)
                     .setVisibility(captionControl, value).apply();
         }
         visible = value;
+        captionsOnly = false;
+    }
+
+    /** GPU-converted YUV cannot use fixed-function subtitle blending. */
+    public synchronized void setGpuCaptions(int width, int height, boolean show) {
+        if (released) throw new IllegalStateException("Native Surface was released");
+        try (SurfaceControl.Transaction tx = new SurfaceControl.Transaction()) {
+            if (show) {
+                if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid caption size");
+                Rect screen = new Rect(0, 0, width, height);
+                tx.setBufferSize(captionControl, width, height)
+                        .setGeometry(captionControl, screen, screen, Surface.ROTATION_0);
+            }
+            tx.setVisibility(backgroundControl, false).setVisibility(videoControl, false)
+                    .setVisibility(captionControl, show).apply();
+        }
+        visible = false;
+        captionsOnly = show;
     }
 
     /** JNI calls this only after vo=null and the host-property completion barrier. */

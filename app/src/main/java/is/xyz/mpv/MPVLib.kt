@@ -21,6 +21,7 @@ object MPVLib {
     external fun destroy()
     external fun attachSurface(surface: Surface)
     private external fun attachSurfaceOwned(surface: Surface)
+    external fun probeTvGpu(width: Int, height: Int): Int
     external fun detachSurface()
     external fun attachNativeDolbySurface(host: NativeDolbySurface?)
 

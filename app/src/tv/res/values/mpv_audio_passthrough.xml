@@ -1,0 +1,4 @@
+<resources>
+    <string name="mpv_audio_passthrough_title">Audio passthrough</string>
+    <string name="mpv_audio_passthrough_summary">Send supported audio formats directly over HDMI. Use PCM for unsupported formats, speed changes, or audio filters.</string>
+</resources>
