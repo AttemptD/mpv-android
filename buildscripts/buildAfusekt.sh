@@ -1,5 +1,7 @@
 #!/bin/bash -e
 
+set -e
+
 cd "$( dirname "${BASH_SOURCE[0]}" )"
 . ./include/depinfo.sh
 

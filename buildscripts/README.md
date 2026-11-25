@@ -113,3 +113,26 @@ libdvdnav, the image VO and JSON IPC. Run
 [http-seek-playback-test.py](tests/http-seek-playback-test.py) and
 [dvd-iso-playback-test.py](tests/dvd-iso-playback-test.py) with `--help` for
 their inputs.
+
+## Shared Afuse Android runtime
+
+Build the phone and TV runtime from this checkout's `codex/afuse` pins.
+The Exo subtitle bridge builds with `libmpv` on Android by default. The TV app
+flavor enables the TV playback policy, including device-dependent rendering
+and audio settings.
+
+From a freshly prepared checkout, export one runtime per shipping ABI and
+install both from the same bundle:
+
+```sh
+./download.sh
+./build-afuse-native.sh /absolute/path/to/afuse-native
+python3 ./afuse-native-bundle.py install /absolute/path/to/afuse-native /absolute/path/to/AfuseKt /absolute/path/to/AfuseKtV
+```
+
+The build uses NDK r29. `MPV_ANDROID_NDK` can point to an existing installation
+of the pinned version. Both apps keep their own `libplayer.so` JNI adapter.
+The installer updates the shared engine libraries, `mpv/native-engine.json`
+and its Gradle verifier together. Normal APK and AAB builds validate the
+packaged libraries against that lock. An explicit `mpvNativeLibsDir` override
+remains available for local diagnostic builds.

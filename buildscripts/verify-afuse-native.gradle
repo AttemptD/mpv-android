@@ -1,0 +1,112 @@
+import groovy.json.JsonSlurper
+
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
+// Installed alongside the Afuse APK's native-engine.json by afuse-native-bundle.py.
+abstract class VerifyAfuseNativeArchive extends DefaultTask {
+    @InputFile
+    @PathSensitive(PathSensitivity.NONE)
+    abstract RegularFileProperty getManifestFile()
+
+    @InputFiles
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract ConfigurableFileCollection getArchives()
+
+    @Input
+    abstract ListProperty<String> getExpectedAbis()
+
+    @TaskAction
+    void verifyArchives() {
+        def manifest = new JsonSlurper().parse(manifestFile.get().asFile)
+        if (manifest.schema != 1 || !(manifest.mpv ==~ /[0-9a-f]{40}/)) {
+            throw new GradleException("Invalid shared mpv manifest: ${manifestFile.get().asFile}")
+        }
+        def outputs = archives.asFileTree.matching { include "**/*.apk", "**/*.aab" }.files
+        if (!outputs) {
+            throw new GradleException("No APK or AAB found for the shared mpv check")
+        }
+        Set<String> seen = new LinkedHashSet<>()
+        for (File output : outputs) {
+            String prefix = output.name.endsWith(".aab") ? "base/lib/" : "lib/"
+            new ZipFile(output).withCloseable { zip ->
+                zip.entries().each { entry ->
+                    if (entry.name.startsWith(prefix) && entry.name.endsWith("/libplayer.so")) {
+                        String abi = entry.name.substring(prefix.length()).split("/")[0]
+                        VerifyAfuseNativeArchive.verifyAbi(output, zip, "${prefix}${abi}/", manifest.abiLibraries[abi])
+                        seen.add(abi)
+                    }
+                }
+            }
+        }
+        if (!seen || !seen.containsAll(expectedAbis.get())) {
+            throw new GradleException("Expected shared mpv ABIs ${expectedAbis.get()}, found ${seen}")
+        }
+        logger.lifecycle("Verified mpv ${manifest.mpv.take(12)} in ${outputs*.name} for ${seen.sort()}")
+    }
+
+    static void verifyAbi(File archive, ZipFile zip, String directory, Map libraries) {
+        if (!libraries?.get("libmpv.so")) {
+            throw new GradleException("${archive.name}: no shared mpv lock for ${directory}")
+        }
+        libraries.each { name, expected ->
+            def entry = zip.getEntry(directory + name)
+            if (entry == null) {
+                throw new GradleException("${archive.name}: missing ${directory}${name}")
+            }
+            def digest = MessageDigest.getInstance("SHA-256")
+            zip.getInputStream(entry).withCloseable { stream ->
+                byte[] buffer = new byte[128 * 1024]
+                int count
+                while ((count = stream.read(buffer)) != -1) {
+                    digest.update(buffer, 0, count)
+                }
+            }
+            if (digest.digest().encodeHex().toString() != expected) {
+                throw new GradleException("${archive.name}: ${directory}${name} does not match native-engine.json")
+            }
+        }
+    }
+}
+
+android.packaging.jniLibs.keepDebugSymbols.addAll([
+    "**/libmpv.so", "**/libav*.so", "**/libsw*.so", "**/libbluray.so", "**/libsmb2.so",
+])
+
+// An applied Gradle script does not share the plugins block's compile classpath.
+def androidLoader = plugins.getPlugin("com.android.application").class.classLoader
+def apkArtifact = androidLoader.loadClass('com.android.build.api.artifact.SingleArtifact$APK').getField('INSTANCE').get(null)
+def bundleArtifact = androidLoader.loadClass('com.android.build.api.artifact.SingleArtifact$BUNDLE').getField('INSTANCE').get(null)
+
+androidComponents.onVariants(androidComponents.selector().all(), { variant ->
+    // An explicit alternate native directory is still available for local debug probes.
+    if (variant.buildType != "release" && providers.gradleProperty("mpvNativeLibsDir").isPresent()) {
+        return
+    }
+    def abis = variant.productFlavors.collectMany { flavor ->
+        android.productFlavors.getByName(flavor.second).ndk.abiFilters.toList()
+    }
+    if (!abis) {
+        abis = android.defaultConfig.ndk.abiFilters.toList()
+    }
+    def manifest = rootProject.layout.projectDirectory.file("mpv/native-engine.json")
+    def suffix = variant.name.capitalize()
+    def apkCheck = tasks.register("verify${suffix}MpvApk", VerifyAfuseNativeArchive) {
+        manifestFile.set(manifest)
+        archives.from(variant.artifacts.get(apkArtifact))
+        expectedAbis.set(abis)
+    }
+    def bundleCheck = tasks.register("verify${suffix}MpvBundle", VerifyAfuseNativeArchive) {
+        manifestFile.set(manifest)
+        archives.from(variant.artifacts.get(bundleArtifact))
+        expectedAbis.set(abis)
+    }
+    tasks.configureEach {
+        if (name == "assemble${suffix}") {
+            dependsOn(apkCheck)
+        }
+        if (name == "bundle${suffix}") {
+            dependsOn(bundleCheck)
+        }
+    }
+} as Action)
