@@ -79,4 +79,4 @@ Source replay: check out v_mpv from the Afuse mpv fork. It includes the
 optional P7 HDR10 base path and the shared HTTP, optical disc and MediaCodec
 fixes. Alternatively, apply the complete mpv export to v_mpv_upstream to
 reproduce that tree. download-deps.sh applies the FFmpeg and libplacebo
-exports to their pinned revisions. The phone dependency cache uses NDK r29.
+exports to their pinned revisions. The Android build pins NDK r29 for both apps.

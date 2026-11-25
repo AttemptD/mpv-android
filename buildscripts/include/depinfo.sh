@@ -4,8 +4,8 @@
 # Make sure to keep v_ndk and v_ndk_n in sync, both are listed on the NDK download page
 
 v_sdk=11076708_latest
-v_ndk=r30
-v_ndk_n=30.0.16248370
+v_ndk=r29
+v_ndk_n=29.0.14206865
 v_sdk_platform=36
 v_sdk_build_tools=36.0.0
 
@@ -23,7 +23,7 @@ v_curl=8.23.0
 mpv_repository=https://github.com/AttemptD/mpv.git
 mpv_upstream_repository=https://github.com/mpv-player/mpv.git
 v_mpv_upstream=d9d402dc07d02c9aa178fb3e33adc390fa2785cc
-v_mpv=96134b3e536134793c246d03f26d3e1ea8b6894d
+v_mpv=adae4a3a607bca47196e72db0f6c2aa8d267fb64
 v_libplacebo=275f7dea27924cdd34ab2e6c20e448b6bc4fab65
 v_ffmpeg=d32b387f2b0a484599d4587d651891f0c63c4238
 

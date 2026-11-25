@@ -1,3 +1,106 @@
+diff --git a/src/dispatch.c b/src/dispatch.c
+index 4bae988a..b9a06c54 100644
+--- a/src/dispatch.c
++++ b/src/dispatch.c
+@@ -289,6 +289,7 @@ struct generate_params {
+     ident_t out_mat;
+     ident_t out_off;
+     int vert_idx;
++    bool target_yuv;
+ };
+ 
+ static void generate_shaders(pl_dispatch dp,
+@@ -323,7 +324,7 @@ static void generate_shaders(pl_dispatch dp,
+ 
+     // Enable all extensions needed for different types of input
+     bool has_ssbo = false, has_ubo = false, has_img = false, has_texel = false,
+-         has_ext = false, has_nofmt = false, has_gather = false;
++         has_ext = false, has_yuv = params->target_yuv, has_nofmt = false, has_gather = false;
+     for (int i = 0; i < sh->descs.num; i++) {
+         switch (sh->descs.elem[i].desc.type) {
+         case PL_DESC_BUF_UNIFORM: has_ubo = true; break;
+@@ -348,6 +349,7 @@ static void generate_shaders(pl_dispatch dp,
+             case PL_SAMPLER_NORMAL: break;
+             case PL_SAMPLER_RECT: break;
+             case PL_SAMPLER_EXTERNAL: has_ext = true; break;
++            case PL_SAMPLER_EXTERNAL_YUV: has_yuv = true; break;
+             case PL_SAMPLER_TYPE_COUNT: pl_unreachable();
+             }
+             break;
+@@ -367,6 +369,8 @@ static void generate_shaders(pl_dispatch dp,
+         ADD(pre, "#extension GL_ARB_shader_storage_buffer_object : enable\n");
+     if (has_texel)
+         ADD(pre, "#extension GL_ARB_texture_buffer_object : enable\n");
++    if (has_yuv)
++        ADD(pre, "#extension GL_EXT_YUV_target : require\n");
+     if (has_ext) {
+         if (gpu->glsl.version >= 300) {
+             ADD(pre, "#extension GL_OES_EGL_image_external_essl3 : enable\n");
+@@ -479,6 +483,7 @@ static void generate_shaders(pl_dispatch dp,
+                 [PL_SAMPLER_NORMAL][3]  = "sampler3D",
+                 [PL_SAMPLER_RECT][2]    = "sampler2DRect",
+                 [PL_SAMPLER_EXTERNAL][2] = "samplerExternalOES",
++                [PL_SAMPLER_EXTERNAL_YUV][2] = "__samplerExternal2DY2YEXT",
+             };
+ 
+             pl_tex tex = sd->binding.object;
+@@ -664,7 +669,9 @@ static void generate_shaders(pl_dispatch dp,
+         pl_hash_merge(&pass->signature, pl_str_builder_hash(vert_head));
+         *out_vert_builder = vert_head;
+ 
+-        if (has_loc) {
++        if (params->target_yuv) {
++            ADD(glsl, "layout(yuv) out vec4 out_color;\n");
++        } else if (has_loc) {
+             ADD(glsl, "layout(location=0) out vec4 out_color;\n");
+         } else {
+             ADD(glsl, "out vec4 out_color;\n");
+@@ -776,6 +783,7 @@ static struct pass *finalize_pass(pl_dispatch dp, pl_shader sh,
+         .pass_params = &params,
+         .sh = sh,
+         .vert_idx = vert_idx,
++        .target_yuv = target && target->sampler_type == PL_SAMPLER_EXTERNAL_YUV,
+     };
+ 
+     if (params.type == PL_PASS_RASTER) {
+diff --git a/src/include/libplacebo/gpu.h b/src/include/libplacebo/gpu.h
+index fcaca197..0901d68e 100644
+--- a/src/include/libplacebo/gpu.h
++++ b/src/include/libplacebo/gpu.h
+@@ -735,6 +735,7 @@ enum pl_sampler_type {
+     PL_SAMPLER_NORMAL,      // gsampler2D, gsampler3D etc.
+     PL_SAMPLER_RECT,        // gsampler2DRect
+     PL_SAMPLER_EXTERNAL,    // gsamplerExternalOES
++    PL_SAMPLER_EXTERNAL_YUV, // __samplerExternal2DY2YEXT (raw Android YUV)
+     PL_SAMPLER_TYPE_COUNT,
+ };
+ 
+diff --git a/src/include/libplacebo/opengl.h b/src/include/libplacebo/opengl.h
+index 168281e1..3524dceb 100644
+--- a/src/include/libplacebo/opengl.h
++++ b/src/include/libplacebo/opengl.h
+@@ -129,6 +129,10 @@ struct pl_opengl_framebuffer {
+     // normal GL semantics, i.e. set this to `true` if the first pixel is the
+     // top left corner.
+     bool flipped;
++
++    // Framebuffer backed by an Android YUV EGLImage. Fragment outputs use
++    // GL_EXT_YUV_target's layout(yuv), in the frame's tagged representation.
++    bool raw_yuv;
+ };
+ 
+ struct pl_opengl_swapchain_params {
+@@ -201,6 +205,10 @@ struct pl_opengl_wrap_params {
+ 
+     // The texture's GLint sized internal format (e.g. GL_RGBA16F). Required.
+     int iformat;
++
++    // Sample an external Android YUV image without the driver's implicit
++    // YUV-to-RGB conversion. Requires GLES 3 and GL_EXT_YUV_target.
++    bool raw_yuv;
+ };
+ 
+ #define pl_opengl_wrap_params(...) (&(struct pl_opengl_wrap_params) { __VA_ARGS__ })
 diff --git a/src/include/libplacebo/renderer.h b/src/include/libplacebo/renderer.h
 index 24044370..ced8adb1 100644
 --- a/src/include/libplacebo/renderer.h
@@ -13,11 +116,50 @@ index 24044370..ced8adb1 100644
      // If this is true, all shaders will be generated as "dynamic" shaders,
      // with any compile-time constants being replaced by runtime-adjustable
      // values. This is generally a performance loss, but has the advantage of
+diff --git a/src/include/libplacebo/shaders/lut.h b/src/include/libplacebo/shaders/lut.h
+index 6e30ddc7..0f0a0869 100644
+--- a/src/include/libplacebo/shaders/lut.h
++++ b/src/include/libplacebo/shaders/lut.h
+@@ -54,6 +54,15 @@ struct pl_custom_lut {
+     // Note: This is purely informative, `pl_shader_custom_lut` ignores it.
+     struct pl_color_repr repr_in, repr_out;
+     struct pl_color_space color_in, color_out;
++
++    // Optional borrowed GPU-resident cubic LUT, instead of `data`. Stored
++    // as a sampleable linear-filtered 2D atlas: x = G * size + R, y = B.
++    // All three dimensions must be equal. Sampling uses trilinear interpolation.
++    pl_tex atlas;
++
++    // Alternatively, a borrowed 3D texture with matching dimensions. Uses
++    // one native trilinear sample. Mutually exclusive with `atlas` and `data`.
++    pl_tex volume;
+ };
+ 
+ // Parse a 3DLUT in .cube format. Returns NULL if the file fails parsing.
 diff --git a/src/opengl/formats.c b/src/opengl/formats.c
-index 9f24cae6..91e4eb12 100644
+index 9f24cae6..6a64dbbd 100644
 --- a/src/opengl/formats.c
 +++ b/src/opengl/formats.c
-@@ -150,6 +150,13 @@ static const struct gl_format formats_float32_gles_fbo[] = {
+@@ -77,6 +77,18 @@ static const struct gl_format formats_norm8[] = {
+     {GL_RGBA8,          RGBA,  U8,  FMT("rgba8",    8, UNORM, S|L|F|V)},
+ };
+ 
++// Core in GL/GLES 3.0. A compact color LUT need not spend 8 bytes per texel
++// on RGBA16F when its output is bounded to a normalized display signal.
++static const struct gl_format formats_norm10[] = {
++    {GL_RGB10_A2, RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, {
++        .name = "rgb10_a2",
++        .type = PL_FMT_UNORM,
++        .caps = S|L|F,
++        .sample_order = {0, 1, 2, 3},
++        .component_depth = {10, 10, 10, 2},
++    }},
++};
++
+ // Signed variants
+ /* TODO: these are broken in mesa
+ static const struct gl_format formats_snorm8[] = {
+@@ -150,6 +162,13 @@ static const struct gl_format formats_float32_gles_fbo[] = {
      {GL_RGBA32F,        RGBA,  FLT, FMT("rgba32f", 32, FLOAT, S|F|V)},
  };
  
@@ -31,7 +173,53 @@ index 9f24cae6..91e4eb12 100644
  // 16-bit floating point texture formats
  static const struct gl_format formats_float16[] = {
      {GL_R16F,           R,     FLT,  FMT("r16f",    16, FLOAT, S|L|F)},
-@@ -526,8 +533,15 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+@@ -289,6 +308,7 @@ static void add_format(pl_gpu pgpu, const struct gl_format *gl_fmt)
+     }
+ 
+     int size;
++    bool packed = false;
+     switch (gl_fmt->type) {
+     case GL_BYTE:
+     case GL_UNSIGNED_BYTE:
+@@ -304,15 +324,19 @@ static void add_format(pl_gpu pgpu, const struct gl_format *gl_fmt)
+     case GL_FLOAT:
+         size = 4;
+         break;
++    case GL_UNSIGNED_INT_2_10_10_10_REV:
++        size = 4;
++        packed = true;
++        break;
+     default:
+         pl_unreachable();
+     }
+ 
+     // Host visible representation
+-    fmt->texel_size = fmt->num_components * size;
++    fmt->texel_size = packed ? size : fmt->num_components * size;
+     fmt->texel_align = 1;
+     for (int i = 0; i < fmt->num_components; i++)
+-        fmt->host_bits[i] = size * 8;
++        fmt->host_bits[i] = packed ? fmt->component_depth[i] : size * 8;
+ 
+     // Compute internal size by summing up the depth
+     int ibits = 0;
+@@ -479,6 +503,7 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+     if (p->gl_ver >= 30) {
+         // Desktop GL3+ has everything
+         DO_FORMATS(formats_norm8);
++        DO_FORMATS(formats_norm10);
+         DO_FORMATS(formats_bgra8);
+         DO_FORMATS(formats_norm16);
+         DO_FORMATS(formats_rgb16_fbo);
+@@ -518,6 +543,7 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+         // GLES 3.0 has some basic formats, with framebuffers for floats
+         // depending on GL_EXT_color_buffer_float support
+         DO_FORMATS(formats_norm8);
++        DO_FORMATS(formats_norm10);
+         if (pl_opengl_has_ext(p->gl, "GL_EXT_texture_norm16")) {
+             DO_FORMATS(formats_norm16);
+             DO_FORMATS(formats_rgb16_fallback);
+@@ -526,8 +552,15 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
              DO_FORMATS(formats_bgra_gles);
          DO_FORMATS(formats_uint);
          if (p->gles_ver >= 32 || pl_opengl_has_ext(p->gl, "GL_EXT_color_buffer_float")) {
@@ -48,8 +236,116 @@ index 9f24cae6..91e4eb12 100644
          } else {
              DO_FORMATS(formats_float32_gles);
              DO_FORMATS(formats_float16_fallback);
+diff --git a/src/opengl/gpu.c b/src/opengl/gpu.c
+index 0ac06967..9d6f7b54 100644
+--- a/src/opengl/gpu.c
++++ b/src/opengl/gpu.c
+@@ -268,7 +268,8 @@ pl_gpu pl_gpu_create_gl(pl_log log, pl_opengl pl_gl, const struct pl_opengl_para
+                            // Work around <https://forums.developer.nvidia.com/t/373037>
+                            strcmp(vendor, "NVIDIA Corporation");
+     p->has_invalidate_tex = gl_test_ext(gpu, "GL_ARB_invalidate_subdata", 43, 0);
+-    p->has_queries = gl_test_ext(gpu, "GL_ARB_timer_query", 30, 0);
++    p->has_queries = gl_test_ext(gpu, "GL_ARB_timer_query", 30, 0) ||
++        (p->gles_ver >= 30 && pl_opengl_has_ext(p->gl, "GL_EXT_disjoint_timer_query"));
+     p->has_storage = gl_test_ext(gpu, "GL_ARB_shader_image_load_store", 42, 31) &&
+                      gl_test_ext(gpu, "GL_ARB_texture_storage", 42, 30);
+     p->has_readback = true;
+@@ -588,6 +589,16 @@ static uint64_t gl_timer_query(pl_gpu gpu, pl_timer timer)
+     if (!MAKE_CURRENT())
+         return 0;
+ 
++    if (p->gles_ver) {
++        GLint disjoint = 0;
++        gl->GetIntegerv(0x8FBB /* GL_GPU_DISJOINT_EXT */, &disjoint);
++        if (disjoint) {
++            timer->index_read = timer->index_write;
++            RELEASE_CURRENT();
++            return 0;
++        }
++    }
++
+     uint64_t res = 0;
+     GLuint query = timer->query[timer->index_read];
+     GLuint avail = 0;
+diff --git a/src/opengl/gpu_pass.c b/src/opengl/gpu_pass.c
+index c5bcf52c..42d1bdab 100644
+--- a/src/opengl/gpu_pass.c
++++ b/src/opengl/gpu_pass.c
+@@ -584,6 +584,17 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
+         gl_check_err(gpu, "gl_pass_run: enabling viewport/scissor");
+ 
+         const struct pl_blend_params *blend = pass->params.blend_params;
++        if (params->target->sampler_type == PL_SAMPLER_EXTERNAL_YUV) {
++            static bool logged;
++            if (!logged) {
++                GLint mask[4], enabled;
++                gl->GetIntegerv(GL_COLOR_WRITEMASK, mask);
++                gl->GetIntegerv(GL_BLEND, &enabled);
++                PL_INFO(gpu, "YUV target draw: blend requested=%d active=%d color mask=%d/%d/%d/%d",
++                    !!blend, enabled, mask[0],mask[1],mask[2],mask[3]);
++                logged = true;
++            }
++        }
+         if (blend) {
+             static const GLenum map_blend[] = {
+                 [PL_BLEND_ZERO]                 = GL_ZERO,
+diff --git a/src/opengl/gpu_tex.c b/src/opengl/gpu_tex.c
+index 69e118bf..ce764647 100644
+--- a/src/opengl/gpu_tex.c
++++ b/src/opengl/gpu_tex.c
+@@ -653,6 +653,13 @@ pl_tex pl_opengl_wrap(pl_gpu gpu, const struct pl_opengl_wrap_params *params)
+                    params->iformat);
+             goto error;
+         }
++    } else if (params->raw_yuv) {
++        // Android YUV FBO attachment queries are not required to expose RGB
++        // channel information. This path is explicitly an 8-bit YUV target.
++        fmt = pl_find_named_fmt(gpu, "rgba8");
++        if (!fmt) goto error;
++        const struct gl_format **glfmtp = PL_PRIV(fmt);
++        glfmt = *glfmtp;
+     } else {
+         // Wrapping framebuffer: Allocate/infer generic FBO format
+         fmt = pl_alloc_obj((void *) gpu, fmt, const struct gl_format *);
+@@ -711,7 +718,10 @@ pl_tex pl_opengl_wrap(pl_gpu gpu, const struct pl_opengl_wrap_params *params)
+             break;
+ 
+         case GL_TEXTURE_RECTANGLE: tex->sampler_type = PL_SAMPLER_RECT; break;
+-        case GL_TEXTURE_EXTERNAL_OES: tex->sampler_type = PL_SAMPLER_EXTERNAL; break;
++        case GL_TEXTURE_EXTERNAL_OES:
++            tex->sampler_type = params->raw_yuv
++                ? PL_SAMPLER_EXTERNAL_YUV : PL_SAMPLER_EXTERNAL;
++            break;
+ 
+         default:
+             PL_ERR(gpu, "Failed mapping texture target %u to any equivalent "
+@@ -721,9 +731,12 @@ pl_tex pl_opengl_wrap(pl_gpu gpu, const struct pl_opengl_wrap_params *params)
+     }
+ 
+     // Create optional extra fbo if needed/possible
++    if (params->raw_yuv && !params->texture)
++        tex->sampler_type = PL_SAMPLER_EXTERNAL_YUV;
+     bool can_fbo = tex_gl->texture &&
+                    (fmt->caps & PL_FMT_CAP_RENDERABLE) &&
+                    tex->sampler_type != PL_SAMPLER_EXTERNAL &&
++                   tex->sampler_type != PL_SAMPLER_EXTERNAL_YUV &&
+                    dims < 3;
+ 
+     if (can_fbo && !tex_gl->fbo) {
+diff --git a/src/opengl/swapchain.c b/src/opengl/swapchain.c
+index fd296d9b..e49ad6be 100644
+--- a/src/opengl/swapchain.c
++++ b/src/opengl/swapchain.c
+@@ -110,6 +110,7 @@ static bool gl_sw_resize(pl_swapchain sw, int *width, int *height)
+             .framebuffer = p->params.framebuffer.id,
+             .width = w,
+             .height = h,
++            .raw_yuv = p->params.framebuffer.raw_yuv,
+         ));
+         if (!p->fb) {
+             PL_ERR(sw, "Failed wrapping OpenGL framebuffer!");
 diff --git a/src/renderer.c b/src/renderer.c
-index d9bc5e09..6e645f47 100644
+index d9bc5e09..d484d221 100644
 --- a/src/renderer.c
 +++ b/src/renderer.c
 @@ -418,11 +418,21 @@ static void find_fbo_format(struct pass_state *pass)
@@ -92,3 +388,120 @@ index d9bc5e09..6e645f47 100644
  
          // Probe the right variant for each number of channels, falling
          // back to the next biggest format
+@@ -1580,6 +1594,7 @@ static bool want_merge(struct pass_state *pass,
+ 
+     // Non-trivial scaling
+     struct pl_sample_src src = {
++        .tex = st->img.tex,
+         .new_w = ref->img.w,
+         .new_h = ref->img.h,
+         .rect = {
+diff --git a/src/shaders.c b/src/shaders.c
+index 1421740d..5d1423c1 100644
+--- a/src/shaders.c
++++ b/src/shaders.c
+@@ -651,6 +651,7 @@ static const char *samplers2D[] = {
+     [PL_SAMPLER_NORMAL]     = "sampler2D",
+     [PL_SAMPLER_RECT]       = "sampler2DRect",
+     [PL_SAMPLER_EXTERNAL]   = "samplerExternalOES",
++    [PL_SAMPLER_EXTERNAL_YUV] = "__samplerExternal2DY2YEXT",
+ };
+ 
+ ident_t sh_subpass(pl_shader sh, pl_shader sub)
+diff --git a/src/shaders/lut.c b/src/shaders/lut.c
+index f6bbfd23..867b1117 100644
+--- a/src/shaders/lut.c
++++ b/src/shaders/lut.c
+@@ -229,7 +229,26 @@ void pl_shader_custom_lut(pl_shader sh, const struct pl_custom_lut *lut,
+     if (!sh_require(sh, PL_SHADER_SIG_COLOR, 0, 0))
+         return;
+ 
+-    ident_t fun = sh_lut(sh, sh_lut_params(
++    if (lut->atlas && (dims != 3 || lut->size[0] != lut->size[1] ||
++        lut->size[0] != lut->size[2] || !lut->atlas->params.sampleable ||
++        !(lut->atlas->params.format->caps & PL_FMT_CAP_LINEAR) ||
++        lut->atlas->params.w != (int64_t)lut->size[0] * lut->size[1] ||
++        lut->atlas->params.h != lut->size[2])) {
++        SH_FAIL(sh, "Invalid GPU color LUT atlas");
++        return;
++    }
++
++    if (lut->volume && (lut->atlas || dims != 3 ||
++        !lut->volume->params.sampleable ||
++        !(lut->volume->params.format->caps & PL_FMT_CAP_LINEAR) ||
++        lut->volume->params.w != lut->size[0] ||
++        lut->volume->params.h != lut->size[1] ||
++        lut->volume->params.d != lut->size[2])) {
++        SH_FAIL(sh, "Invalid GPU color LUT volume");
++        return;
++    }
++
++    ident_t fun = lut->atlas || lut->volume ? NULL_IDENT : sh_lut(sh, sh_lut_params(
+         .object     = lut_state,
+         .var_type   = PL_VAR_FLOAT,
+         .method     = SH_LUT_TETRAHEDRAL,
+@@ -242,7 +261,7 @@ void pl_shader_custom_lut(pl_shader sh, const struct pl_custom_lut *lut,
+         .priv       = (void *) lut,
+     ));
+ 
+-    if (!fun) {
++    if (!lut->atlas && !lut->volume && !fun) {
+         SH_FAIL(sh, "pl_shader_custom_lut: failed generating LUT object");
+         return;
+     }
+@@ -267,7 +286,54 @@ void pl_shader_custom_lut(pl_shader sh, const struct pl_custom_lut *lut,
+         break;
+     case 3:
+         sh_describe(sh, "custom 3DLUT");
+-        GLSL("color.rgb = "$"(color.rgb).rgb; \n", fun);
++        if (lut->volume) {
++            ident_t tex = sh_desc(sh, (struct pl_shader_desc) {
++                .desc = {.name = "color_lut_volume", .type = PL_DESC_SAMPLED_TEX},
++                .binding = {
++                    .object = lut->volume,
++                    .sample_mode = PL_TEX_SAMPLE_LINEAR,
++                    .address_mode = PL_TEX_ADDRESS_CLAMP,
++                },
++            });
++            float scale[3], offset[3];
++            for (int i = 0; i < 3; i++) {
++                scale[i] = (lut->size[i] - 1.0f) / lut->size[i];
++                offset[i] = 0.5f / lut->size[i];
++            }
++            GLSL("color.rgb = textureLod("$", clamp(color.rgb, 0.0, 1.0) * "$" + "$", 0.0).rgb; \n",
++                 tex, sh_var(sh, (struct pl_shader_var){
++                     .var = pl_var_vec3("volume_scale"), .data = scale,
++                 }), sh_var(sh, (struct pl_shader_var){
++                     .var = pl_var_vec3("volume_offset"), .data = offset,
++                 }));
++        } else if (lut->atlas) {
++            ident_t tex = sh_desc(sh, (struct pl_shader_desc) {
++                .desc = {
++                    .name = "color_lut_atlas",
++                    .type = PL_DESC_SAMPLED_TEX,
++                },
++                .binding = {
++                    .object = lut->atlas,
++                    .sample_mode = PL_TEX_SAMPLE_LINEAR,
++                    .address_mode = PL_TEX_ADDRESS_CLAMP,
++                },
++            });
++            float size = lut->size[0];
++            GLSL("{ \n"
++                 "vec3 q = clamp(color.rgb, 0.0, 1.0) * "$"; \n"
++                 "float g0 = floor(q.y), g1 = min(g0 + 1.0, "$ "); \n"
++                 "vec2 a = vec2((g0 * "$" + q.x + 0.5) / "$", \n"
++                 "              (q.z + 0.5) / "$"); \n"
++                 "vec2 b = vec2((g1 * "$" + q.x + 0.5) / "$", a.y); \n"
++                 "color.rgb = mix(textureLod("$", a, 0.0).rgb, \n"
++                 "                textureLod("$", b, 0.0).rgb, fract(q.y)); \n"
++                 "} \n",
++                 SH_FLOAT(size - 1), SH_FLOAT(size - 1),
++                 SH_FLOAT(size), SH_FLOAT(size * size), SH_FLOAT(size),
++                 SH_FLOAT(size), SH_FLOAT(size * size), tex, tex);
++        } else {
++            GLSL("color.rgb = "$"(color.rgb).rgb; \n", fun);
++        }
+         break;
+     }
+ 

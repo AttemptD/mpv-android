@@ -39,8 +39,8 @@ args=(
 	--disable-{muxers,encoders,devices}
 	# useful to taking screenshots
 	--enable-encoder=mjpeg,png
-	# useful for the `dump-cache` command
-	--enable-muxer=mov,matroska,mpegts
+	# Container recording and IEC61937 audio passthrough.
+	--enable-muxer=mov,matroska,mpegts,spdif
 )
 ../configure "${args[@]}"
 

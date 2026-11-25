@@ -52,6 +52,32 @@ index 374bd5c..50e1182 100755
  enabled libsnappy         && require libsnappy snappy-c.h snappy_compress -lsnappy -lstdc++
  enabled libsoxr           && require libsoxr soxr.h soxr_create -lsoxr
  enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/sftp.h sftp_init
+diff --git a/libavcodec/aarch64/hevcdsp_init_aarch64.c b/libavcodec/aarch64/hevcdsp_init_aarch64.c
+index a2ca8aa..912e628 100644
+--- a/libavcodec/aarch64/hevcdsp_init_aarch64.c
++++ b/libavcodec/aarch64/hevcdsp_init_aarch64.c
+@@ -27,6 +27,8 @@
+ #include "libavutil/aarch64/cpu.h"
+ #include "libavcodec/aarch64/h26x/dsp.h"
+ #include "libavcodec/hevc/dsp.h"
++#include "libavcodec/hevc/mc10_neon.h"
++#include "libavcodec/hevc/sao10_neon.h"
+ 
+ void ff_hevc_v_loop_filter_chroma_8_neon(uint8_t *_pix, ptrdiff_t _stride,
+                                          const int *_tc, const uint8_t *_no_p, const uint8_t *_no_q);
+diff --git a/libavcodec/arm/hevcdsp_init_neon.c b/libavcodec/arm/hevcdsp_init_neon.c
+index 6f11361..d6b5a8d 100644
+--- a/libavcodec/arm/hevcdsp_init_neon.c
++++ b/libavcodec/arm/hevcdsp_init_neon.c
+@@ -21,6 +21,8 @@
+ #include "libavutil/attributes.h"
+ #include "libavutil/arm/cpu.h"
+ #include "libavcodec/hevc/dsp.h"
++#include "libavcodec/hevc/mc10_neon.h"
++#include "libavcodec/hevc/sao10_neon.h"
+ #include "libavcodec/avcodec.h"
+ #include "hevcdsp_arm.h"
+ 
 diff --git a/libavcodec/bitstream_filters.c b/libavcodec/bitstream_filters.c
 index 9c9443e..3b890d1 100644
 --- a/libavcodec/bitstream_filters.c
@@ -140,7 +166,7 @@ index 0000000..f47779b
 +};
 diff --git a/libavcodec/dovi_mel.c b/libavcodec/dovi_mel.c
 new file mode 100644
-index 0000000..a2d423c
+index 0000000..b4b90dd
 --- /dev/null
 +++ b/libavcodec/dovi_mel.c
 @@ -0,0 +1,212 @@
@@ -176,7 +202,7 @@ index 0000000..a2d423c
 +    return 0;
 +}
 +
-+static int is_mel(const AVDOVIMetadata *metadata)
++int ff_dovi_mel_metadata(const AVDOVIMetadata *metadata)
 +{
 +    const AVDOVIRpuDataHeader *h = av_dovi_get_header(metadata);
 +    const AVDOVIDataMapping *m = av_dovi_get_mapping(metadata);
@@ -214,7 +240,7 @@ index 0000000..a2d423c
 +    ret = ff_dovi_get_metadata(&s->input, &metadata);
 +    if (ret <= 0)
 +        return ret < 0 ? ret : AVERROR_INVALIDDATA;
-+    if (!is_mel(metadata)) {
++    if (!ff_dovi_mel_metadata(metadata)) {
 +        av_log(s->logctx, AV_LOG_ERROR, "P7 MEL conversion refused nonzero/unknown enhancement residual\n");
 +        ret = AVERROR_INVALIDDATA;
 +        goto done;
@@ -358,10 +384,10 @@ index 0000000..a2d423c
 +}
 diff --git a/libavcodec/dovi_mel.h b/libavcodec/dovi_mel.h
 new file mode 100644
-index 0000000..f368e08
+index 0000000..346eac2
 --- /dev/null
 +++ b/libavcodec/dovi_mel.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,27 @@
 +/*
 + * Strict Dolby Vision Profile 7 MEL to Profile 8.1 conversion.
 + * This file is part of FFmpeg and is licensed under LGPL version 2.1 or later.
@@ -383,16 +409,352 @@ index 0000000..f368e08
 +
 +int ff_dovi_mel_init(DOVIMELContext *s, void *logctx,
 +                     const AVDOVIDecoderConfigurationRecord *cfg);
++int ff_dovi_mel_metadata(const AVDOVIMetadata *metadata);
 +int ff_dovi_mel_convert(DOVIMELContext *s, AVPacket *pkt);
 +void ff_dovi_mel_flush(DOVIMELContext *s);
 +void ff_dovi_mel_close(DOVIMELContext *s);
 +
 +#endif
+diff --git a/libavcodec/hevc/dsp.c b/libavcodec/hevc/dsp.c
+index 5ae779f..484e2f7 100644
+--- a/libavcodec/hevc/dsp.c
++++ b/libavcodec/hevc/dsp.c
+@@ -23,6 +23,23 @@
+  */
+ 
+ #include "dsp.h"
++#include "libavutil/cpu.h"
++
++void ff_hevc_dsp_init_mc10(HEVCDSPContext *c)
++{
++#if (ARCH_AARCH64 || ARCH_ARM) && HAVE_NEON
++    if (av_get_cpu_flags() & AV_CPU_FLAG_NEON)
++        ff_hevc_mc10_neon_init(c);
++#endif
++}
++
++void ff_hevc_dsp_init_sao10(HEVCDSPContext *c)
++{
++#if (ARCH_AARCH64 || ARCH_ARM) && HAVE_NEON
++    if (av_get_cpu_flags() & AV_CPU_FLAG_NEON)
++        ff_hevc_sao10_neon_init(c);
++#endif
++}
+ 
+ static const int8_t transform[32][32] = {
+     { 64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,  64,
+diff --git a/libavcodec/hevc/dsp.h b/libavcodec/hevc/dsp.h
+index b884cd3..15cf18b 100644
+--- a/libavcodec/hevc/dsp.h
++++ b/libavcodec/hevc/dsp.h
+@@ -125,6 +125,10 @@ typedef struct HEVCDSPContext {
+ } HEVCDSPContext;
+ 
+ void ff_hevc_dsp_init(HEVCDSPContext *hpc, int bit_depth);
++void ff_hevc_dsp_init_mc10(HEVCDSPContext *c);
++void ff_hevc_mc10_neon_init(HEVCDSPContext *c);
++void ff_hevc_dsp_init_sao10(HEVCDSPContext *c);
++void ff_hevc_sao10_neon_init(HEVCDSPContext *c);
+ 
+ /** ff_hevc_.pel_filters[0] are dummies to simplify array addressing */
+ extern const int8_t ff_hevc_epel_filters[8][4];
+diff --git a/libavcodec/hevc/hevcdec.c b/libavcodec/hevc/hevcdec.c
+index 18e22f6..dde2c99 100644
+--- a/libavcodec/hevc/hevcdec.c
++++ b/libavcodec/hevc/hevcdec.c
+@@ -739,6 +739,10 @@ static int set_sps(HEVCContext *s, HEVCLayerContext *l, const HEVCSPS *sps)
+ 
+     ff_hevc_pred_init(&s->hpc,     sps->bit_depth);
+     ff_hevc_dsp_init (&s->hevcdsp, sps->bit_depth);
++    if (sps->bit_depth == 10 && s->mc10_neon)
++        ff_hevc_dsp_init_mc10(&s->hevcdsp);
++    if (sps->bit_depth == 10 && s->sao10_neon)
++        ff_hevc_dsp_init_sao10(&s->hevcdsp);
+     ff_videodsp_init (&s->vdsp,    sps->bit_depth);
+ 
+     l->sps    = av_refstruct_ref_c(sps);
+@@ -4201,6 +4205,10 @@ static av_cold void hevc_decode_flush(AVCodecContext *avctx)
+ #define PAR (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
+ 
+ static const AVOption options[] = {
++    { "mc10_neon", "Experimental 10-bit ARM NEON motion compensation", OFFSET(mc10_neon),
++        AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, PAR },
++    { "sao10_neon", "Experimental 10-bit ARM NEON sample adaptive offset", OFFSET(sao10_neon),
++        AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, PAR },
+     { "apply_defdispwin", "Apply default display window from VUI", OFFSET(apply_defdispwin),
+         AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, PAR },
+     { "strict-displaywin", "strictly apply default display window size", OFFSET(apply_defdispwin),
+diff --git a/libavcodec/hevc/hevcdec.h b/libavcodec/hevc/hevcdec.h
+index 8394740..fbc0a3d 100644
+--- a/libavcodec/hevc/hevcdec.h
++++ b/libavcodec/hevc/hevcdec.h
+@@ -560,6 +560,8 @@ typedef struct HEVCContext {
+     int is_nalff;           ///< this flag is != 0 if bitstream is encapsulated
+                             ///< as a format defined in 14496-15
+     int apply_defdispwin;
++    int mc10_neon;
++    int sao10_neon;
+ 
+     // multi-layer AVOptions
+     int         *view_ids;
+diff --git a/libavcodec/hevc/mc10_neon.h b/libavcodec/hevc/mc10_neon.h
+new file mode 100644
+index 0000000..600c916
+--- /dev/null
++++ b/libavcodec/hevc/mc10_neon.h
+@@ -0,0 +1,150 @@
++/*
++ * 10-bit HEVC motion compensation using ARM NEON intrinsics.
++ *
++ * This file is part of FFmpeg and is distributed under the GNU Lesser General
++ * Public License, version 2.1 or (at your option) any later version.
++ */
++
++#ifndef AVCODEC_HEVC_MC10_NEON_H
++#define AVCODEC_HEVC_MC10_NEON_H
++
++#include <arm_neon.h>
++#include "libavutil/attributes.h"
++#include "dsp.h"
++
++/* Four samples fit both ARMv7 and AArch64 without narrowing a filter sum.
++ * Keep the reference decoder's two separate truncations for HV filtering. */
++static av_always_inline int32x4_t mc10_filter4(const int16_t *src,
++                                             ptrdiff_t step,
++                                             const int8_t *filter,
++                                             int taps, int before)
++{
++    // Interleave independent MAC chains on A55 instead of serializing every
++    // tap behind one accumulator. Both sums stay within signed 32-bit range;
++    // rounding still happens once, after their exact integer addition.
++    int32x4_t even = vmull_n_s16(vld1_s16(src - before * step), filter[0]);
++    int32x4_t odd = vmull_n_s16(vld1_s16(src + (1 - before) * step), filter[1]);
++    for (int k = 2; k < taps; k += 2) {
++        even = vmlal_n_s16(even, vld1_s16(src + (k - before) * step), filter[k]);
++        odd = vmlal_n_s16(odd, vld1_s16(src + (k + 1 - before) * step), filter[k + 1]);
++    }
++    return vaddq_s32(even, odd);
++}
++
++enum mc10_mode { MC10_PUT, MC10_UNI, MC10_UNI_W, MC10_BI, MC10_BI_W };
++
++static av_always_inline void mc10_store4(int16_t *dst, int16x4_t p,
++                                        const int16_t *src2, int shift,
++                                        int rounding, int w0, int w1, int o1,
++                                        enum mc10_mode mode)
++{
++    if (mode == MC10_PUT) { vst1_s16(dst, p); return; }
++    int32x4_t value = mode == MC10_UNI_W || mode == MC10_BI_W
++        ? vmull_n_s16(p, w1) : vmovl_s16(p);
++    if (mode == MC10_BI || mode == MC10_BI_W) {
++        int16x4_t other = vld1_s16(src2);
++        value = mode == MC10_BI_W ? vmlal_n_s16(value, other, w0)
++            : vaddq_s32(value, vmovl_s16(other));
++    }
++    value = vshlq_s32(vaddq_s32(value, vdupq_n_s32(rounding)), vdupq_n_s32(-shift));
++    if (mode == MC10_UNI_W) value = vaddq_s32(value, vdupq_n_s32(o1 * 4));
++    vst1_u16((uint16_t *)dst, vmin_u16(vqmovun_s32(value), vdup_n_u16(1023)));
++}
++
++static av_always_inline void mc10_predict(int16_t *dst, ptrdiff_t dststride,
++                                         const uint8_t *src8, ptrdiff_t stride8,
++                                         const int16_t *src2, int height,
++                                         int denom, int w0, int w1, int o0, int o1,
++                                         int mx, int my, int width, int chroma,
++                                         enum mc10_mode mode)
++{
++    const int16_t *src = (const int16_t *)src8;
++    ptrdiff_t stride = stride8 / 2;
++    const int taps = chroma ? 4 : 8, before = chroma ? 1 : 3;
++    const int8_t *hf = chroma ? ff_hevc_epel_filters[mx] : ff_hevc_qpel_filters[mx];
++    const int8_t *vf = chroma ? ff_hevc_epel_filters[my] : ff_hevc_qpel_filters[my];
++    int16_t tmp[(MAX_PB_SIZE + 7) * MAX_PB_SIZE];
++    const int shift = mode == MC10_UNI ? 4 : mode == MC10_BI ? 5 :
++                      denom + (mode == MC10_BI_W ? 5 : 4);
++    const int rounding = mode == MC10_BI_W ?
++        (o0 * 4 + o1 * 4 + 1) * (1 << (shift - 1)) : 1 << (shift - 1);
++
++    if (mx && my) {
++        const int16_t *row = src - before * stride;
++        for (int y = 0; y < height + taps - 1; y++, row += stride)
++            for (int x = 0; x < width; x += 4)
++                vst1_s16(tmp + y * MAX_PB_SIZE + x,
++                         vshrn_n_s32(mc10_filter4(row + x, 1, hf, taps, before), 2));
++        for (int y = 0; y < height; y++) {
++            for (int x = 0; x < width; x += 4) {
++                int16x4_t value = vshrn_n_s32(
++                    mc10_filter4(tmp + (y + before) * MAX_PB_SIZE + x,
++                                 MAX_PB_SIZE, vf, taps, before), 6);
++                mc10_store4(dst + y * dststride + x, value,
++                            src2 ? src2 + y * MAX_PB_SIZE + x : NULL,
++                            shift,rounding,w0,w1,o1,mode);
++            }
++        }
++    } else {
++        for (int y = 0; y < height; y++, src += stride) {
++            for (int x = 0; x < width; x += 4) {
++                int16x4_t value;
++                if (mx || my)
++                    value = vshrn_n_s32(mc10_filter4(src + x, mx ? 1 : stride,
++                                                     mx ? hf : vf, taps, before), 2);
++                else
++                    value = vshl_n_s16(vld1_s16(src + x), 4);
++                mc10_store4(dst + y * dststride + x, value,
++                            src2 ? src2 + y * MAX_PB_SIZE + x : NULL,
++                            shift,rounding,w0,w1,o1,mode);
++            }
++        }
++    }
++}
++
++#define MC10_WRAPPERS(name, chroma) \
++static void name##_put(int16_t *dst, const uint8_t *src, ptrdiff_t stride, \
++                       int h, intptr_t mx, intptr_t my, int w) \
++{ mc10_predict(dst,64,src,stride,NULL,h,0,0,0,0,0,mx,my,w,chroma,MC10_PUT); } \
++static void name##_uni(uint8_t *dst, ptrdiff_t ds, const uint8_t *src, ptrdiff_t ss, \
++                       int h, intptr_t mx, intptr_t my, int w) \
++{ mc10_predict((int16_t *)dst,ds/2,src,ss,NULL,h,0,0,1,0,0,mx,my,w,chroma,MC10_UNI); } \
++static void name##_uni_w(uint8_t *dst, ptrdiff_t ds, const uint8_t *src, ptrdiff_t ss, \
++                       int h, int denom, int weight, int offset, intptr_t mx, intptr_t my, int w) \
++{ mc10_predict((int16_t *)dst,ds/2,src,ss,NULL,h,denom,0,weight,0,offset,mx,my,w,chroma,MC10_UNI_W); } \
++static void name##_bi(uint8_t *dst, ptrdiff_t ds, const uint8_t *src, ptrdiff_t ss, \
++                      const int16_t *src2, int h, intptr_t mx, intptr_t my, int w) \
++{ mc10_predict((int16_t *)dst,ds/2,src,ss,src2,h,0,1,1,0,0,mx,my,w,chroma,MC10_BI); } \
++static void name##_bi_w(uint8_t *dst, ptrdiff_t ds, const uint8_t *src, ptrdiff_t ss, \
++                        const int16_t *src2, int h, int denom, int w0, int w1, \
++                        int o0, int o1, intptr_t mx, intptr_t my, int w) \
++{ mc10_predict((int16_t *)dst,ds/2,src,ss,src2,h,denom,w0,w1,o0,o1,mx,my,w,chroma,MC10_BI_W); }
++
++MC10_WRAPPERS(mc10_qpel, 0)
++MC10_WRAPPERS(mc10_epel, 1)
++#undef MC10_WRAPPERS
++
++av_cold void ff_hevc_mc10_neon_init(HEVCDSPContext *c)
++{
++    /* Widths 2 and 6 keep their C functions: no overread or partial SIMD store. */
++    const int widths[] = {2, 4, 6, 8, 12, 16, 24, 32, 48, 64};
++    for (int i = 0; i < 10; i++) {
++        if (widths[i] % 4) continue;
++        for (int y = 0; y < 2; y++) {
++            for (int x = 0; x < 2; x++) {
++                if (!x && !y) continue; // Preserve the existing copy/integer path.
++#define MC10_ASSIGN(type) \
++                c->put_hevc_##type[i][y][x] = mc10_##type##_put; \
++                c->put_hevc_##type##_uni[i][y][x] = mc10_##type##_uni; \
++                c->put_hevc_##type##_uni_w[i][y][x] = mc10_##type##_uni_w; \
++                c->put_hevc_##type##_bi[i][y][x] = mc10_##type##_bi; \
++                c->put_hevc_##type##_bi_w[i][y][x] = mc10_##type##_bi_w;
++                MC10_ASSIGN(qpel)
++                MC10_ASSIGN(epel)
++#undef MC10_ASSIGN
++            }
++        }
++    }
++}
++
++#endif
+diff --git a/libavcodec/hevc/sao10_neon.h b/libavcodec/hevc/sao10_neon.h
+new file mode 100644
+index 0000000..08ba431
+--- /dev/null
++++ b/libavcodec/hevc/sao10_neon.h
+@@ -0,0 +1,91 @@
++/* Bit-exact Main10 SAO, shared by ARMv7 and AArch64 experimental dispatch.
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++#ifndef AVCODEC_HEVC_SAO10_NEON_H
++#define AVCODEC_HEVC_SAO10_NEON_H
++
++#include <arm_neon.h>
++#include "libavutil/attributes.h"
++#include "libavutil/common.h"
++#include "libavcodec/avcodec.h"
++#include "libavcodec/hevc/dsp.h"
++
++static inline uint16x8_t sao10_add(uint16x8_t source, int16x8_t offset)
++{
++    int16x8_t value = vaddq_s16(vreinterpretq_s16_u16(source), offset);
++    value = vmaxq_s16(value, vdupq_n_s16(0));
++    return vreinterpretq_u16_s16(vminq_s16(value, vdupq_n_s16(1023)));
++}
++
++static void sao10_band_neon(uint8_t *dst8, const uint8_t *src8,
++                            ptrdiff_t dst_stride, ptrdiff_t src_stride,
++                            const int16_t *offsets, int left, int width, int height)
++{
++    uint16_t *dst = (uint16_t *)dst8;
++    const uint16_t *src = (const uint16_t *)src8;
++    dst_stride /= 2; src_stride /= 2;
++    for (int y = 0; y < height; y++, dst += dst_stride, src += src_stride) {
++        int x = 0;
++        for (; x + 8 <= width; x += 8) {
++            uint16x8_t value = vld1q_u16(src + x);
++            uint16x8_t band = vandq_u16(vsubq_u16(vshrq_n_u16(value, 5), vdupq_n_u16(left)),
++                                        vdupq_n_u16(31));
++            int16x8_t delta = vdupq_n_s16(0);
++            for (int k = 0; k < 4; k++)
++                delta = vbslq_s16(vceqq_u16(band, vdupq_n_u16(k)), vdupq_n_s16(offsets[k+1]), delta);
++            vst1q_u16(dst + x, sao10_add(value, delta));
++        }
++        for (; x < width; x++) {
++            int band = ((src[x] >> 5) - left) & 31;
++            int value = src[x] + (band < 4 ? offsets[band+1] : 0);
++            dst[x] = av_clip_uintp2(value, 10);
++        }
++    }
++}
++
++static inline int16x8_t sao10_compare(uint16x8_t a, uint16x8_t b)
++{
++    return vsubq_s16(vreinterpretq_s16_u16(vcltq_u16(a, b)),
++                     vreinterpretq_s16_u16(vcgtq_u16(a, b)));
++}
++
++static void sao10_edge_neon(uint8_t *dst8, const uint8_t *src8,
++                            ptrdiff_t dst_stride, const int16_t *offsets,
++                            int eo, int width, int height)
++{
++    const ptrdiff_t stride = (2 * MAX_PB_SIZE + AV_INPUT_BUFFER_PADDING_SIZE) / 2;
++    const ptrdiff_t a[] = {-1, -stride, -stride-1, -stride+1};
++    const ptrdiff_t b[] = { 1,  stride,  stride+1,  stride-1};
++    const uint16_t *src = (const uint16_t *)src8;
++    uint16_t *dst = (uint16_t *)dst8;
++    dst_stride /= 2;
++    for (int y = 0; y < height; y++, dst += dst_stride, src += stride) {
++        int x = 0;
++        for (; x + 8 <= width; x += 8) {
++            uint16x8_t value = vld1q_u16(src + x);
++            int16x8_t edge = vaddq_s16(sao10_compare(value, vld1q_u16(src + x + a[eo])),
++                                      sao10_compare(value, vld1q_u16(src + x + b[eo])));
++            int16x8_t delta = vdupq_n_s16(offsets[0]);
++            delta = vbslq_s16(vceqq_s16(edge, vdupq_n_s16(-2)), vdupq_n_s16(offsets[1]), delta);
++            delta = vbslq_s16(vceqq_s16(edge, vdupq_n_s16(-1)), vdupq_n_s16(offsets[2]), delta);
++            delta = vbslq_s16(vceqq_s16(edge, vdupq_n_s16(1)), vdupq_n_s16(offsets[3]), delta);
++            delta = vbslq_s16(vceqq_s16(edge, vdupq_n_s16(2)), vdupq_n_s16(offsets[4]), delta);
++            vst1q_u16(dst + x, sao10_add(value, delta));
++        }
++        for (; x < width; x++) {
++            int value = src[x], first = src[x + a[eo]], second = src[x + b[eo]];
++            int edge = (value > first) - (value < first) + (value > second) - (value < second);
++            static const uint8_t index[] = {1, 2, 0, 3, 4};
++            dst[x] = av_clip_uintp2(value + offsets[index[2 + edge]], 10);
++        }
++    }
++}
++
++av_cold void ff_hevc_sao10_neon_init(HEVCDSPContext *c)
++{
++    for (int i = 0; i < 5; i++) {
++        c->sao_band_filter[i] = sao10_band_neon;
++        c->sao_edge_filter[i] = sao10_edge_neon;
++    }
++}
++#endif
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..955b59e 100644
+index bc176d8..8a86c6e 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -30,14 +30,19 @@
+@@ -30,14 +30,20 @@
  #include "libavutil/mem.h"
  #include "libavutil/opt.h"
  #include "libavutil/intreadwrite.h"
@@ -406,17 +768,20 @@ index bc176d8..955b59e 100644
 +#include "dovi_rpu.h"
 +#include "dovi_mel.h"
 +#include "h2645_parse.h"
++#include "h2645_sei.h"
  #include "h264_parse.h"
  #include "h264_ps.h"
 +#include "hevc/hevc.h"
  #include "hevc/parse.h"
  #include "hwconfig.h"
  #include "internal.h"
-@@ -45,6 +50,14 @@
+@@ -45,6 +51,22 @@
  #include "mediacodec_wrapper.h"
  #include "mediacodecdec_common.h"
  
-+#define MEDIACODEC_DOVI_MAX_QUEUED 64
++// A TV decoder can accept several seconds of compressed preroll before its
++// first output. 64 entries discarded RPUs still needed by that output.
++#define MEDIACODEC_DOVI_MAX_QUEUED 512
 +
 +typedef struct MediaCodecDoviFrame {
 +    int64_t pts_us;
@@ -424,18 +789,26 @@ index bc176d8..955b59e 100644
 +    AVBufferRef *rpu;
 +} MediaCodecDoviFrame;
 +
++typedef struct MediaCodecHdrFrame {
++    int64_t pts_us;
++    H2645SEIMasteringDisplay mastering;
++    H2645SEIContentLight light;
++} MediaCodecHdrFrame;
++
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -59,8 +72,224 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,8 +81,358 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
 +    int native_dolby_vision;
++    int native_dolby_hdr_output;
 +    int native_dolby_p7_mel;
 +    int mel_conversion_failed;
 +    int native_hdr_output;
 +    int native_hdr_p7_base;
++    int external_output_backpressure;
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    /* MediaCodec does not parse HEVC Dolby Vision NAL units itself. Keep a
@@ -447,6 +820,11 @@ index bc176d8..955b59e 100644
 +    MediaCodecDoviFrame *dovi_frames;
 +    int nb_dovi_frames;
 +    int dovi_metadata_logged;
++    int64_t dovi_last_output_pts_us;
++    H2645SEI hdr_sei;
++    MediaCodecHdrFrame *hdr_frames;
++    int nb_hdr_frames;
++    int hdr_metadata_logged;
 +#endif
  } MediaCodecH264DecContext;
  
@@ -473,7 +851,101 @@ index bc176d8..955b59e 100644
 +        mediacodec_dovi_frame_unref(&s->dovi_frames[i]);
 +    av_freep(&s->dovi_frames);
 +    s->nb_dovi_frames = 0;
++    s->dovi_last_output_pts_us = AV_NOPTS_VALUE;
++    av_freep(&s->hdr_frames);
++    s->nb_hdr_frames = 0;
 +    ff_dovi_ctx_flush(&s->dovi_ctx);
++}
++
++// Reuse FFmpeg's SEI payload parser/validation. Store a snapshot for each
++// input PTS: parsing future input must not change an earlier output frame.
++static int mediacodec_hdr_parse_nals(AVCodecContext *avctx,
++                                    MediaCodecH264DecContext *s, const AVPacket *pkt)
++{
++    bool has_picture = false;
++    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
++        const H2645NAL *nal = &s->dovi_pkt.nals[i];
++        if (nal->nuh_layer_id) continue;
++        has_picture |= nal->type < 32;
++        if (nal->type != HEVC_NAL_SEI_PREFIX && nal->type != HEVC_NAL_SEI_SUFFIX)
++            continue;
++        const uint8_t *data = nal->data + 2, *end = nal->data + nal->size;
++        while (end - data > 1) {
++            unsigned type = 0, size = 0;
++            int byte;
++            do {
++                if (data == end || type > INT_MAX - 255) goto next_nal;
++                byte = *data++; type += byte;
++            } while (byte == 255);
++            do {
++                if (data == end || size > INT_MAX - 255) goto next_nal;
++                byte = *data++; size += byte;
++            } while (byte == 255);
++            if (size > end - data) break;
++            if (type == SEI_TYPE_MASTERING_DISPLAY_COLOUR_VOLUME ||
++                type == SEI_TYPE_CONTENT_LIGHT_LEVEL_INFO) {
++                GetBitContext bits;
++                GetByteContext bytes;
++                bytestream2_init(&bytes, data, size);
++                int ret = init_get_bits8(&bits, data, size);
++                if (ret >= 0)
++                    ret = ff_h2645_sei_message_decode(&s->hdr_sei, type,
++                        AV_CODEC_ID_HEVC, &bits, &bytes, avctx);
++                if (ret < 0)
++                    av_log(avctx, AV_LOG_WARNING, "Invalid HDR10 SEI metadata ignored\n");
++            }
++            data += size;
++        }
++next_nal:;
++    }
++    if (!has_picture || (!s->hdr_sei.mastering_display.present &&
++                         !s->hdr_sei.content_light.present))
++        return 0;
++    if (s->nb_hdr_frames >= MEDIACODEC_DOVI_MAX_QUEUED) {
++        memmove(s->hdr_frames, s->hdr_frames + 1,
++                (--s->nb_hdr_frames) * sizeof(*s->hdr_frames));
++        av_log(avctx, AV_LOG_WARNING, "MediaCodec HDR10 metadata queue overflow\n");
++    }
++    MediaCodecHdrFrame *frames = av_realloc_array(s->hdr_frames,
++        s->nb_hdr_frames + 1, sizeof(*s->hdr_frames));
++    if (!frames) return AVERROR(ENOMEM);
++    s->hdr_frames = frames;
++    s->hdr_frames[s->nb_hdr_frames++] = (MediaCodecHdrFrame) {
++        .pts_us = mediacodec_pts_to_us(avctx, pkt->pts),
++        .mastering = s->hdr_sei.mastering_display,
++        .light = s->hdr_sei.content_light,
++    };
++    return 0;
++}
++
++static int mediacodec_hdr_attach(AVCodecContext *avctx,
++                                MediaCodecH264DecContext *s, AVFrame *frame)
++{
++    int64_t pts = mediacodec_pts_to_us(avctx, frame->pts);
++    if (frame->format == AV_PIX_FMT_MEDIACODEC && frame->data[3])
++        pts = ((MediaCodecBuffer *)frame->data[3])->pts;
++    int kept = 0, ret = 0;
++    // Permit timestamp reordering; expire only metadata well behind output.
++    int64_t retain = 2000000;
++    if (avctx->framerate.num > 0 && avctx->framerate.den > 0)
++        retain = FFMAX(retain, av_rescale_q(32, av_inv_q(avctx->framerate), AV_TIME_BASE_Q));
++    for (int i = 0; i < s->nb_hdr_frames; i++) {
++        const MediaCodecHdrFrame *entry = &s->hdr_frames[i];
++        if (entry->pts_us == pts) {
++            H2645SEI sei = {.mastering_display = entry->mastering,
++                           .content_light = entry->light};
++            ret = ff_h2645_sei_to_frame(frame, &sei, AV_CODEC_ID_HEVC,
++                                        avctx, NULL, 10, 10, 0);
++            if (!s->hdr_metadata_logged && ret >= 0) {
++                av_log(avctx, AV_LOG_INFO, "HDR10 SEI side data active on MediaCodec output\n");
++                s->hdr_metadata_logged = 1;
++            }
++        } else if (entry->pts_us >= pts - retain) {
++            s->hdr_frames[kept++] = *entry;
++        }
++    }
++    s->nb_hdr_frames = kept;
++    return ret;
 +}
 +
 +static void mediacodec_dovi_update_config(AVCodecContext *avctx,
@@ -564,7 +1036,7 @@ index bc176d8..955b59e 100644
 +
 +static int mediacodec_dovi_parse_packet(AVCodecContext *avctx,
 +                                        MediaCodecH264DecContext *s,
-+                                        const AVPacket *pkt)
++                                        AVPacket *pkt)
 +{
 +    int ret;
 +
@@ -579,6 +1051,9 @@ index bc176d8..955b59e 100644
 +               "Failed splitting HEVC packet for Dolby Vision side parsing\n");
 +        return 0;
 +    }
++
++    ret = mediacodec_hdr_parse_nals(avctx, s, pkt);
++    if (ret < 0) return ret;
 +
 +    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
 +        const H2645NAL *nal = &s->dovi_pkt.nals[i];
@@ -603,6 +1078,26 @@ index bc176d8..955b59e 100644
 +    if (frame->format == AV_PIX_FMT_MEDIACODEC && frame->data[3])
 +        pts_us = ((MediaCodecBuffer *)frame->data[3])->pts;
 +
++    // Discard stale preroll metadata for frames the platform never returned.
++    // Keep at least 32 frame intervals behind the latest output so a small
++    // vendor timestamp reordering cannot remove a still usable RPU.
++    if (s->dovi_last_output_pts_us == AV_NOPTS_VALUE ||
++        pts_us > s->dovi_last_output_pts_us)
++        s->dovi_last_output_pts_us = pts_us;
++    int64_t retention_us = 2000000;
++    if (avctx->framerate.num > 0 && avctx->framerate.den > 0)
++        retention_us = FFMAX(retention_us,
++            av_rescale_q(32, av_inv_q(avctx->framerate), AV_TIME_BASE_Q));
++    int kept = 0;
++    for (int i = 0; i < s->nb_dovi_frames; i++) {
++        if (s->dovi_frames[i].pts_us < s->dovi_last_output_pts_us - retention_us) {
++            mediacodec_dovi_frame_unref(&s->dovi_frames[i]);
++        } else {
++            s->dovi_frames[kept++] = s->dovi_frames[i];
++        }
++    }
++    s->nb_dovi_frames = kept;
++
 +    for (int i = 0; i < s->nb_dovi_frames; i++) {
 +        if (s->dovi_frames[i].pts_us == pts_us) {
 +            match = i;
@@ -616,6 +1111,16 @@ index bc176d8..955b59e 100644
 +    memmove(&s->dovi_frames[match], &s->dovi_frames[match + 1],
 +            (s->nb_dovi_frames - match - 1) * sizeof(*s->dovi_frames));
 +    s->nb_dovi_frames--;
++
++    if (s->native_hdr_p7_base) {
++        // Classify the original compressed RPU without applying it to the
++        // HDR10 base pixels. Native MEL conversion revalidates every RPU.
++        if (metadata.metadata)
++            av_dict_set(&frame->metadata, "mpv.dovi.mel",
++                ff_dovi_mel_metadata((const void *)metadata.metadata->data) ? "1" : "0", 0);
++        mediacodec_dovi_frame_unref(&metadata);
++        return 0;
++    }
 +
 +    if (metadata.metadata) {
 +        AVFrameSideData *sd = av_frame_new_side_data_from_buf(
@@ -652,7 +1157,7 @@ index bc176d8..955b59e 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -70,6 +299,13 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -70,6 +442,14 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -661,12 +1166,13 @@ index bc176d8..955b59e 100644
 +    ff_h2645_packet_uninit(&s->dovi_pkt);
 +    ff_dovi_ctx_unref(&s->dovi_ctx);
 +    ff_dovi_mel_close(&s->mel);
++    ff_h2645_sei_reset(&s->hdr_sei);
 +#endif
 +
      return 0;
  }
  
-@@ -245,6 +481,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -245,6 +625,16 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  
          avctx->profile = sps->ptl.general_ptl.profile_idc;
          avctx->level   = sps->ptl.general_ptl.level_idc;
@@ -683,7 +1189,7 @@ index bc176d8..955b59e 100644
  
          if ((ret = h2645_ps_to_nalu(vps->data, vps->data_size, &vps_data, &vps_data_size)) < 0 ||
              (ret = h2645_ps_to_nalu(sps->data, sps->data_size, &sps_data, &sps_data_size)) < 0 ||
-@@ -305,6 +551,144 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,6 +695,150 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -767,6 +1273,16 @@ index bc176d8..955b59e 100644
 +{
 +    AVPacket base = {0};
 +    int ret, bytes = 0, removed = 0;
++    if (avctx->codec_id != AV_CODEC_ID_HEVC || !pkt->size) return 0;
++    if (s->native_hdr_p7_base) {
++        ret = mediacodec_dovi_parse_packet(avctx, s, pkt);
++        if (ret < 0) return ret;
++    }
++    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx, 4,
++                               AV_CODEC_ID_HEVC, H2645_FLAG_SMALL_PADDING);
++    if (ret < 0) return ret;
++    ret = mediacodec_hdr_parse_nals(avctx, s, pkt);
++    if (ret < 0) return ret;
 +    mediacodec_dovi_update_config(avctx, s, pkt);
 +    if (!s->dovi_ctx.cfg.dv_profile)
 +        return 0;
@@ -777,10 +1293,6 @@ index bc176d8..955b59e 100644
 +        (cfg->dv_profile != 8 || cfg->el_present_flag ||
 +         cfg->dv_bl_signal_compatibility_id != (s->native_hdr_output == 16 ? 1 : 4))))
 +        return AVERROR_INVALIDDATA;
-+    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx, 4,
-+                               AV_CODEC_ID_HEVC, H2645_FLAG_SMALL_PADDING);
-+    if (ret < 0)
-+        return ret;
 +    for (int i = 0; i < s->dovi_pkt.nb_nals; i++) {
 +        H2645NAL *n = &s->dovi_pkt.nals[i];
 +        if (n->nuh_layer_id && !p7_base)
@@ -828,7 +1340,7 @@ index bc176d8..955b59e 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -315,6 +699,15 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -315,6 +849,16 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
  
@@ -837,6 +1349,7 @@ index bc176d8..955b59e 100644
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
 +    s->dovi_ctx.logctx = avctx;
++    s->dovi_last_output_pts_us = AV_NOPTS_VALUE;
 +    if (avctx->codec_id == AV_CODEC_ID_HEVC)
 +        mediacodec_dovi_update_config(avctx, s, NULL);
 +#endif
@@ -844,7 +1357,7 @@ index bc176d8..955b59e 100644
      if (s->use_ndk_codec < 0)
          s->use_ndk_codec = !av_jni_get_java_vm(avctx);
  
-@@ -351,6 +744,31 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -351,6 +895,33 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
          ret = hevc_set_extradata(avctx, format);
          if (ret < 0)
              goto done;
@@ -858,16 +1371,18 @@ index bc176d8..955b59e 100644
 +                    goto done;
 +                cfg = &s->mel.output.cfg;
 +            }
-+            if ((cfg->dv_profile != 5 && cfg->dv_profile != 8) ||
-+                !cfg->rpu_present_flag || cfg->el_present_flag) {
++            const int direct_p7 = cfg->dv_profile == 7 &&
++                cfg->dv_bl_signal_compatibility_id == 6 && !s->native_dolby_p7_mel;
++            if ((cfg->dv_profile != 5 && cfg->dv_profile != 8 && !direct_p7) ||
++                !cfg->rpu_present_flag || (!direct_p7 && cfg->el_present_flag)) {
 +                av_log(avctx, AV_LOG_ERROR,
-+                       "Native Dolby Vision requires a single-layer P5/P8 stream\n");
++                       "Native Dolby Vision requires P5/P8 or declared compatible P7 decoding\n");
 +                ret = AVERROR(EINVAL);
 +                goto done;
 +            }
 +            codec_mime = "video/dolby-vision";
 +            ff_AMediaFormat_setInt32(format, "profile",
-+                                    cfg->dv_profile == 5 ? 0x20 : 0x100);
++                                    cfg->dv_profile == 5 ? 0x20 : direct_p7 ? 0x80 : 0x100);
 +            if (cfg->dv_level >= 1 && cfg->dv_level <= 13)
 +                ff_AMediaFormat_setInt32(format, "level", 1 << (cfg->dv_level - 1));
 +            av_log(avctx, AV_LOG_INFO, "Native Dolby Vision decoder requested: P%d level %d\n",
@@ -876,17 +1391,35 @@ index bc176d8..955b59e 100644
          break;
  #endif
  #if CONFIG_MPEG2_MEDIACODEC_DECODER
-@@ -430,6 +848,9 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -430,6 +1001,19 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      }
  
      ff_AMediaFormat_setString(format, "mime", codec_mime);
++    if (s->native_dolby_hdr_output) {
++        if (!s->native_dolby_vision) {
++            ret = AVERROR(EINVAL);
++            goto done;
++        }
++        // Ask the platform Dolby processor for HDR10, then verify its real
++        // output format. P5 pixels cannot be relabelled as an HDR10 base.
++        ff_AMediaFormat_setInt32(format, "color-transfer", 6);
++        ff_AMediaFormat_setInt32(format, "color-standard", 6);
++    }
 +    if (s->native_hdr_output &&
 +        (ret = mediacodec_set_native_hdr(avctx, s, format)) < 0)
 +        goto done;
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -486,12 +907,40 @@ done:
+@@ -449,6 +1033,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     }
+ 
+     s->ctx->delay_flush = s->delay_flush;
++    s->ctx->require_hdr10_output = s->native_dolby_hdr_output;
+     s->ctx->use_ndk_codec = s->use_ndk_codec;
+ 
+     if ((ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format)) < 0) {
+@@ -486,12 +1071,67 @@ done:
      return ret;
  }
  
@@ -895,6 +1428,33 @@ index bc176d8..955b59e 100644
 +                                     AVFrame *frame, bool wait)
 +{
 +    int ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, wait);
++    if (ret >= 0 && s->native_dolby_hdr_output && !s->ctx->hdr10_output_verified) {
++        av_log(avctx, AV_LOG_ERROR, "Dolby processor has not confirmed HDR10 output\n");
++        av_frame_unref(frame);
++        return AVERROR_EXTERNAL;
++    }
++#if CONFIG_HEVC_MEDIACODEC_DECODER
++    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC) {
++        ret = mediacodec_hdr_attach(avctx, s, frame);
++        if (ret < 0) { av_frame_unref(frame); return ret; }
++    }
++#endif
++    if (ret >= 0) {
++        const enum AVPacketSideDataType packet_types[] = {
++            AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
++        };
++        const enum AVFrameSideDataType frame_types[] = {
++            AV_FRAME_DATA_MASTERING_DISPLAY_METADATA, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
++        };
++        for (int i = 0; i < FF_ARRAY_ELEMS(packet_types); i++) {
++            const AVPacketSideData *sd = ff_get_coded_side_data(avctx, packet_types[i]);
++            if (sd && !av_frame_get_side_data(frame, frame_types[i])) {
++                AVFrameSideData *out = av_frame_new_side_data(frame, frame_types[i], sd->size);
++                if (!out) { av_frame_unref(frame); return AVERROR(ENOMEM); }
++                memcpy(out->data, sd->data, sd->size);
++            }
++        }
++    }
 +    if (ret >= 0 && s->native_hdr_output && avctx->color_trc != s->native_hdr_output) {
 +        av_log(avctx, AV_LOG_ERROR, "Native HDR decoder changed the requested transfer\n");
 +        av_frame_unref(frame);
@@ -902,7 +1462,7 @@ index bc176d8..955b59e 100644
 +    }
 +
 +#if CONFIG_HEVC_MEDIACODEC_DECODER
-+    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC && !s->native_hdr_output &&
++    if (ret >= 0 && avctx->codec_id == AV_CODEC_ID_HEVC && (!s->native_hdr_output || s->native_hdr_p7_base) &&
 +        !s->native_dolby_p7_mel) {
 +        ret = mediacodec_dovi_attach(avctx, s, frame);
 +        if (ret < 0)
@@ -927,7 +1487,7 @@ index bc176d8..955b59e 100644
      /* In delay_flush mode, wait until the user has released or rendered
         all retained frames. */
      if (s->delay_flush && ff_mediacodec_dec_is_flushing(avctx, s->ctx)) {
-@@ -501,7 +950,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -501,7 +1141,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
      }
  
      /* poll for new frame */
@@ -936,16 +1496,35 @@ index bc176d8..955b59e 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -512,7 +961,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -512,15 +1152,25 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
              if (index < 0) {
                  /* no space, block for an output frame to appear */
 -                ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
-+                ret = mediacodec_receive_output(avctx, s, frame, true);
++                const bool external_surface = s->external_output_backpressure &&
++                    s->ctx->surface && s->ctx->output_buffer_count > 0;
++                ret = mediacodec_receive_output(avctx, s, frame, !external_surface);
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -558,12 +1007,34 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+                  * return EAGAIN, which violate the design.
+                  */
+                 if (ff_AMediaCodec_infoTryAgainLater(s->ctx->codec, index) &&
+-                    ret == AVERROR(EAGAIN))
++                    ret == AVERROR(EAGAIN)) {
++                    // Rendering releases MediaCodecBuffer ownership before
++                    // AImageReader/the GPU returns the underlying Surface slot.
++                    // hw_buffer_count alone therefore misses this backpressure.
++                    // Let the opted-in asynchronous host service its VO instead
++                    // of polling in this decoder while its consumer cannot run.
++                    if (external_surface)
++                        return AVERROR(EAGAIN);
+                     continue;
++                }
+                 return ret;
+             }
+             s->ctx->current_input_buffer = index;
+@@ -558,12 +1208,34 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
              if (ret < 0)
                  return ret;
@@ -982,7 +1561,7 @@ index bc176d8..955b59e 100644
      }
  
      return AVERROR(EAGAIN);
-@@ -575,6 +1046,11 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -575,6 +1247,11 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -994,26 +1573,107 @@ index bc176d8..955b59e 100644
      ff_mediacodec_dec_flush(avctx, s->ctx);
  }
  
-@@ -594,6 +1070,14 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
+@@ -594,6 +1271,18 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
  #define OFFSET(x) offsetof(MediaCodecH264DecContext, x)
  #define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
  static const AVOption ff_mediacodec_vdec_options[] = {
 +    { "native_dolby_vision", "Use the platform Dolby Vision decoder for direct Surface output",
 +            OFFSET(native_dolby_vision), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
++    { "native_dolby_hdr_output", "Require verified HDR10 output from the platform Dolby processor",
++            OFFSET(native_dolby_hdr_output), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
 +    { "native_dolby_p7_mel", "Strictly convert zero-residual P7 MEL to P8.1 for native Dolby output",
 +            OFFSET(native_dolby_p7_mel), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
 +    { "native_hdr_output", "Present the compatible PQ (16) or HLG (18) base signal directly",
 +            OFFSET(native_hdr_output), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 18, VD },
 +    { "native_hdr_p7_base", "Allow P7 compatibility-ID-6 HDR10 base output, discarding RPU and EL",
 +            OFFSET(native_hdr_p7_base), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
++    { "external_output_backpressure", "Yield when the Surface consumer retains decoder output buffers",
++            OFFSET(external_output_backpressure), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
      { "delay_flush", "Delay flush until hw output buffers are returned to the decoder",
                       OFFSET(delay_flush), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
      { "ndk_codec", "Use MediaCodec from NDK",
 diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
-index 9a627c0..ae1b482 100644
+index 9a627c0..a167dbe 100644
 --- a/libavcodec/mediacodecdec_common.c
 +++ b/libavcodec/mediacodecdec_common.c
-@@ -773,6 +773,14 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
+@@ -270,17 +270,40 @@ static void ff_mediacodec_dec_unref(MediaCodecDecContext *s)
+             s->surface = NULL;
+         }
+ 
++        av_buffer_unref(&s->discard_device);
++
+         av_freep(&s->codec_name);
+         av_freep(&s);
+     }
+ }
+ 
++static int mediacodec_render_discarded(void *opaque)
++{
++    AVMediaCodecBuffer *buffer = opaque;
++    MediaCodecDecContext *ctx = buffer->ctx;
++    int status;
++
++    if (atomic_fetch_add(&buffer->released, 1) ||
++        (!ctx->delay_flush && buffer->serial != atomic_load(&ctx->serial)))
++        return 0;
++    atomic_fetch_sub(&ctx->hw_buffer_count, 1);
++    status = ff_AMediaCodec_releaseOutputBuffer(ctx->codec, buffer->index, 1);
++    return status < 0 ? status : 1;
++}
++
+ static void mediacodec_buffer_release(void *opaque, uint8_t *data)
+ {
+     AVMediaCodecBuffer *buffer = opaque;
+     MediaCodecDecContext *ctx = buffer->ctx;
+     int released = atomic_load(&buffer->released);
+ 
++    if (!released && ctx->on_buffer_discard &&
++        (ctx->delay_flush || buffer->serial == atomic_load(&ctx->serial))) {
++        ctx->on_buffer_discard(ctx->on_buffer_discard_opaque, buffer,
++                               mediacodec_render_discarded);
++        released = atomic_load(&buffer->released);
++    }
++
+     if (!released && (ctx->delay_flush || buffer->serial == atomic_load(&ctx->serial))) {
+         atomic_fetch_sub(&ctx->hw_buffer_count, 1);
+         av_log(ctx->avctx, AV_LOG_DEBUG,
+@@ -647,6 +670,21 @@ static int mediacodec_dec_parse_video_format(AVCodecContext *avctx, MediaCodecDe
+     if (color_transfer)
+         avctx->color_trc = ff_AMediaFormatColorTransfer_to_AVColorTransfer(color_transfer);
+ 
++    if (s->require_hdr10_output) {
++        // Check the decoder's output keys, not AVCodecContext values inherited
++        // from the input or a configure request that the codec may ignore.
++        s->hdr10_output_verified = color_transfer == 6 && color_standard == 6;
++        if (color_transfer && !s->hdr10_output_verified) {
++            av_log(avctx, AV_LOG_ERROR,
++                   "Dolby processor did not produce HDR10 (standard=%d transfer=%d)\n",
++                   color_standard, color_transfer);
++            ret = AVERROR_EXTERNAL;
++            goto fail;
++        }
++        if (s->hdr10_output_verified)
++            av_log(avctx, AV_LOG_INFO, "Dolby processor HDR10 output verified\n");
++    }
++
+     av_log(avctx, AV_LOG_INFO,
+         "Output crop parameters top=%d bottom=%d left=%d right=%d, "
+         "resulting dimensions width=%d height=%d\n",
+@@ -761,6 +799,13 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
+                 if (device_ctx->hwctx) {
+                     AVMediaCodecDeviceContext *mediacodec_ctx = (AVMediaCodecDeviceContext *)device_ctx->hwctx;
+                     s->surface = ff_mediacodec_surface_ref(mediacodec_ctx->surface, mediacodec_ctx->native_window, avctx);
++                    if (s->surface && mediacodec_ctx->on_buffer_discard) {
++                        s->discard_device = av_buffer_ref(avctx->hw_device_ctx);
++                        if (!s->discard_device)
++                            return AVERROR(ENOMEM);
++                        s->on_buffer_discard = mediacodec_ctx->on_buffer_discard;
++                        s->on_buffer_discard_opaque = mediacodec_ctx->on_buffer_discard_opaque;
++                    }
+                     av_log(avctx, AV_LOG_INFO, "Using surface %p\n", s->surface);
+                 }
+             }
+@@ -773,6 +818,14 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
      }
  
      profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);
@@ -1028,6 +1688,29 @@ index 9a627c0..ae1b482 100644
      if (profile < 0) {
          av_log(avctx, AV_LOG_WARNING, "Unsupported or unknown profile\n");
      }
+diff --git a/libavcodec/mediacodecdec_common.h b/libavcodec/mediacodecdec_common.h
+index 0ab2903..3cf3fec 100644
+--- a/libavcodec/mediacodecdec_common.h
++++ b/libavcodec/mediacodecdec_common.h
+@@ -57,6 +57,8 @@ typedef struct MediaCodecDecContext {
+     int stride;
+     int slice_height;
+     int color_format;
++    bool require_hdr10_output;
++    bool hdr10_output_verified;
+     int crop_top;
+     int crop_bottom;
+     int crop_left;
+@@ -66,6 +68,9 @@ typedef struct MediaCodecDecContext {
+ 
+     uint64_t output_buffer_count;
+     ssize_t current_input_buffer;
++    AVBufferRef *discard_device;
++    void (*on_buffer_discard)(void *opaque, void *buffer, int (*render)(void *buffer));
++    void *on_buffer_discard_opaque;
+ 
+     bool delay_flush;
+     atomic_int serial;
 diff --git a/libavformat/Makefile b/libavformat/Makefile
 index 0d2e757..86fd1a0 100644
 --- a/libavformat/Makefile
@@ -1950,3 +2633,27 @@ index 257b419..ecc4f6f 100644
  extern const URLProtocol ff_libzmq_protocol;
  extern const URLProtocol ff_ipfs_gateway_protocol;
  extern const URLProtocol ff_ipns_gateway_protocol;
+diff --git a/libavutil/hwcontext_mediacodec.h b/libavutil/hwcontext_mediacodec.h
+index fc0263c..247ffed 100644
+--- a/libavutil/hwcontext_mediacodec.h
++++ b/libavutil/hwcontext_mediacodec.h
+@@ -56,6 +56,19 @@ typedef struct AVMediaCodecDeviceContext {
+      *   -init_hw_device mediacodec=mediacodec,create_window=1
+      */
+     int create_window;
++
++    /**
++     * Optional TV Surface consumer callback for an unrendered output buffer.
++     * Call render(buffer) to queue it to the Surface, then acquire and discard
++     * its ImageReader image. render returns 1 if queued, 0 if invalidated by
++     * a concurrent flush, or a negative error. No image is queued for 0/error.
++     * This avoids broken vendor non-rendered-buffer paths.
++     * The callback must not retain the buffer and must serialize acquisition
++     * with normal presentation. NULL preserves normal MediaCodec behavior.
++     * The device is retained until all decoder buffers have been returned.
++     */
++    void (*on_buffer_discard)(void *opaque, void *buffer, int (*render)(void *buffer));
++    void *on_buffer_discard_opaque;
+ } AVMediaCodecDeviceContext;
+ 
+ #endif /* AVUTIL_HWCONTEXT_MEDIACODEC_H */
