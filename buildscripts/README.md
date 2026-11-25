@@ -98,3 +98,18 @@ Merge `upstream/master` into `codex/afuse` in each repository to sync. After
 testing and pushing an updated mpv core, update the outer project's `v_mpv`
 pin and patch export, then commit and push the outer repository. See the
 [sync record](../docs/upstream-sync-20261109.txt) for commands and validation.
+
+The shared HTTP range, disc image and Android GPU fixes are included in the
+pinned mpv commit. For the HTTP cache unit test, run from this directory after
+preparing the dependencies:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I deps/mpv tests/http-seek-cache-test.c -o /tmp/mpv-http-cache-test
+/tmp/mpv-http-cache-test
+```
+
+The existing playback regressions use a headless mpv with libcurl, libbluray,
+libdvdnav, the image VO and JSON IPC. Run
+[http-seek-playback-test.py](tests/http-seek-playback-test.py) and
+[dvd-iso-playback-test.py](tests/dvd-iso-playback-test.py) with `--help` for
+their inputs.

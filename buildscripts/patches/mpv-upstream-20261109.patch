@@ -1,5 +1,5 @@
 diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
-index 70c3418852..1b4463c5fc 100644
+index 70c3418852..bf91ed0163 100644
 --- a/DOCS/man/input.rst
 +++ b/DOCS/man/input.rst
 @@ -3718,6 +3718,11 @@ Property list
@@ -22,7 +22,7 @@ index 70c3418852..1b4463c5fc 100644
                  "metadata"           MPV_FORMAT_NODE_MAP
                      (key and string value for each metadata entry)
  
-@@ -4030,6 +4036,19 @@ Property list
+@@ -4030,6 +4036,28 @@ Property list
  
      How these details are handled may change in the future.
  
@@ -32,6 +32,15 @@ index 70c3418852..1b4463c5fc 100644
 +    ``decoder-failed`` reports native decoder initialization failure. ``frames``
 +    and ``osd-updates`` count submitted video buffers and caption updates for
 +    this VO instance. In other VOs, flags are false and counters are zero.
++
++    ``mel-conversion`` reports whether P7 MEL to P8.1 conversion was requested.
++
++``video-dec-params/dolby-vision-mel``
++    True only if the original decoded frame carries a canonical zero-residual
++    MEL RPU. Metadata inherited from a separate enhancement stream is not
++    sufficient for native conversion of the selected base stream. Hosts must
++    also check that the selected source is Profile 7 and the device supports
++    Profile 8. A false value includes absent or unrecognized RPU metadata.
 +
 +``android-native-hdr-status``
 +    Same counters and failure flags as ``android-native-dolby-status``, scoped
@@ -43,7 +52,7 @@ index 70c3418852..1b4463c5fc 100644
      Current video output driver (name as used with ``--vo``).
  
 diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
-index dddff27f69..6572467412 100644
+index dddff27f69..89e2e82543 100644
 --- a/DOCS/man/options.rst
 +++ b/DOCS/man/options.rst
 @@ -4024,6 +4024,25 @@ Disc Devices
@@ -72,10 +81,42 @@ index dddff27f69..6572467412 100644
  ``--cdda-...``
      These options can be used to tune the CD Audio reading feature of mpv.
  
-@@ -7263,6 +7282,27 @@ them.
+@@ -5920,6 +5939,22 @@ TLS/connection diagnostics), set ``--msg-level=curl=trace``.
+     network thread from the consumer (default: 4 MiB, minimum: 32 KiB).
+     Lower values may reduce in-flight data and reduce latency.
+ 
++``--curl-seek-cache-size=<bytes>``
++    Maximum raw-byte cache per seekable HTTP stream with a known size
++    (default: 32 MiB, range: 0-256 MiB). Memory is allocated as data is read.
++    Reuses consumed data and unread prefetch when a demuxer alternates between
++    distant audio, video and subtitle ranges. This is separate from the
++    demuxer packet cache. Set to 0 to disable it.
++
++    Nearby forward seeks also read through gaps of up to ``--curl-buffer-size``
++    bytes on the existing connection, retaining the skipped bytes in this cache.
++
++    On a distant cache miss, collects up to 4 MiB of prefetch, bounded by the
++    curl ring buffer and this cache size. The collection deadline is one
++    second after starting the request; normal first-byte waiting still applies.
++    Ignored for non-seekable, unknown-size and non-HTTP streams, and for disc
++    image readers which already maintain their own raw-byte cache.
++
+ ``--curl-max-request-size=<bytes>``
+     For seekable streams, split the transfer into Range requests of at most
+     this size (default: 0, i.e. one open-ended request for the whole stream).
+@@ -7263,6 +7298,44 @@ them.
      :/opt/homebrew/bin:  homebrew (ARM) install path
      :/opt/homebrew/sbin: homebrew (ARM) install path
  
++``--android-native-dolby-p7-mel=<yes|no>``
++    Permit native Dolby output for Profile 7 MEL by converting its RPU and
++    configuration to single-layer Profile 8.1 (default: no). Requires
++    ``android-native-dolby=yes`` and the matching FFmpeg converter. The host
++    must first confirm ``video-dec-params/dolby-vision-mel``. The converter
++    independently checks every RPU and rejects FEL, malformed or unsupported
++    metadata before discarding enhancement NAL units. A failure must restore
++    GPU playback of the original stream. No video image data is re-encoded.
++
 +``--android-native-dolby=<yes|no>``
 +    Enable platform Dolby Vision P5/P8 decoding for the Android native Dolby VO
 +    (default: no). Requires a supported decoder/display and an embedding host
@@ -91,6 +132,14 @@ index dddff27f69..6572467412 100644
 +    Do not enable together with ``android-native-dolby``. Applications must
 +    verify the matching display/decoder capability and implement GPU fallback.
 +
++``--android-native-hdr-p7-base=<yes|no>``
++    Allow ``android-native-hdr=pq`` to present only the original HDR10 base
++    layer of Dolby Vision Profile 7 with compatibility ID 6 (default: no).
++    Requires the matching FFmpeg ``native_hdr_p7_base`` extension. Removes
++    RPU and enhancement-layer NAL units without re-encoding the base image.
++    This discards MEL/FEL and dynamic Dolby metadata; it is HDR10 fallback,
++    not complete Dolby Vision playback. Never applies to Profile 5.
++
 +``--android-native-dolby-surface=<reference>``
 +    JNI-only reference to the embedding application's ``NativeDolbySurface``
 +    object. Like ``wid``, the reference is owned by the embedding application.
@@ -100,7 +149,7 @@ index dddff27f69..6572467412 100644
  ``--android-surface-size=<WxH>``
      Set dimensions of the rendering surface used by the Android gpu context.
      Needs to be set by the embedding application if the dimensions change during
-@@ -7270,6 +7310,45 @@ them.
+@@ -7270,6 +7343,45 @@ them.
  
      Android with ``--gpu-context=android`` only.
  
@@ -146,7 +195,7 @@ index dddff27f69..6572467412 100644
  ``--d3d11-composition-size=<WxH>``
      Set size of the output for d3d11 composition mode.
      When use composition mode, there is no window, must set the output size by
-@@ -7277,6 +7356,17 @@ them.
+@@ -7277,6 +7389,17 @@ them.
  
      Windows with ``--gpu-context=d3d11`` and  ``--d3d11-output-mode=composition`` only.
  
@@ -196,10 +245,22 @@ index b43e5d7737..bcbe1b1e3a 100644
      Shared memory video output driver without hardware acceleration that works
      whenever Wayland is present.
 diff --git a/demux/demux.c b/demux/demux.c
-index 296993b63f..c1c7fd1010 100644
+index 296993b63f..8fff15c26d 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -4101,6 +4101,10 @@ static bool queue_seek(struct demux_internal *in, double seek_pts, int flags,
+@@ -3773,6 +3773,11 @@ struct demuxer *demux_open_url(const char *url,
+     if (!s) {
+         s = stream_create(url, STREAM_READ | params->stream_flags,
+                           priv_cancel, global);
++#if HAVE_LIBBLURAY
++        if (s && params->is_top_level && !params->init_fragment.len &&
++            (!params->force_format || !params->force_format[0]))
++            s = stream_open_disc_image(s, params->stream_flags & STREAM_ORIGIN_MASK);
++#endif
+         if (s && params->init_fragment.len) {
+             s = create_webshit_concat_stream(global, priv_cancel,
+                                              params->init_fragment, s);
+@@ -4101,6 +4106,10 @@ static bool queue_seek(struct demux_internal *in, double seek_pts, int flags,
  
      bool require_cache = flags & SEEK_CACHED;
      flags &= ~(unsigned)SEEK_CACHED;
@@ -210,7 +271,7 @@ index 296993b63f..c1c7fd1010 100644
  
      bool set_backwards = flags & SEEK_SATAN;
      flags &= ~(unsigned)SEEK_SATAN;
-@@ -4109,7 +4113,9 @@ static bool queue_seek(struct demux_internal *in, double seek_pts, int flags,
+@@ -4109,7 +4118,9 @@ static bool queue_seek(struct demux_internal *in, double seek_pts, int flags,
      flags &= ~(unsigned)SEEK_BLOCK;
  
      struct demux_cached_range *cache_target =
@@ -221,7 +282,7 @@ index 296993b63f..c1c7fd1010 100644
  
      if (!cache_target) {
          if (require_cache) {
-@@ -4382,6 +4388,25 @@ void demuxer_refresh_track(struct demuxer *demuxer, struct sh_stream *stream,
+@@ -4382,6 +4393,25 @@ void demuxer_refresh_track(struct demuxer *demuxer, struct sh_stream *stream,
      mp_mutex_unlock(&in->lock);
  }
  
@@ -757,7 +818,7 @@ index a9c0227783..7f23063709 100644
 +                                   struct sh_stream *el_sh,
 +                                   struct demuxer *demuxer);
 diff --git a/meson.build b/meson.build
-index 327a432705..6fbcb7cbaa 100644
+index 327a432705..3f5a7b4d96 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -476,7 +476,11 @@ features += {'memrchr': cc.has_function('memrchr', args: '-D_GNU_SOURCE',
@@ -783,8 +844,18 @@ index 327a432705..6fbcb7cbaa 100644
  features += {'dvdnav': dvdnav.found()}
  if features['dvdnav']
      dependencies += dvdnav
+@@ -1277,7 +1282,8 @@ features += {'egl-android': egl_android.found()}
+ if features['egl-android']
+     dependencies += egl_android
+     features += {'gl': true}
+-    sources += files('video/out/opengl/context_android.c')
++    sources += files('video/out/opengl/context_android.c',
++                     'video/out/opengl/android_gl_trace.c')
+ endif
+ 
+ egl_drm = get_option('egl-drm').require(
 diff --git a/options/options.c b/options/options.c
-index a432414551..bb81c7f036 100644
+index a432414551..0918df9611 100644
 --- a/options/options.c
 +++ b/options/options.c
 @@ -172,6 +172,10 @@ static const m_option_t mp_vo_opt_list[] = {
@@ -798,22 +869,26 @@ index a432414551..bb81c7f036 100644
      {"video-unscaled", OPT_CHOICE(unscaled,
          {"no", 0}, {"yes", 1}, {"downscale-big", 2})},
      {"video-recenter", OPT_BOOL(recenter)},
-@@ -250,6 +254,14 @@ static const m_option_t mp_vo_opt_list[] = {
+@@ -249,7 +253,18 @@ static const m_option_t mp_vo_opt_list[] = {
+         {"roundsmall", DWMWCP_ROUNDSMALL})},
  #endif
  #if HAVE_EGL_ANDROID
++    {"android-gl-trace", OPT_BOOL(android_gl_trace)},
      {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
 +    {"android-hdr-output", OPT_BOOL(android_hdr_output)},
 +    {"android-dovi-yuv", OPT_BOOL(android_dovi_yuv)},
 +#endif
 +#if HAVE_ANDROID
 +    {"android-native-dolby", OPT_BOOL(android_native_dolby), .flags = UPDATE_VO},
++    {"android-native-hdr-p7-base", OPT_BOOL(android_native_hdr_p7_base), .flags = UPDATE_VO},
 +    {"android-native-hdr", OPT_CHOICE(android_native_hdr,
 +        {"no", 0}, {"pq", 16}, {"hlg", 18}), .flags = UPDATE_VO},
 +    {"android-native-dolby-surface", OPT_INT64(android_native_dolby_surface), .flags = UPDATE_VO},
++    {"android-native-dolby-p7-mel", OPT_BOOL(android_native_dolby_p7_mel), .flags = UPDATE_VO},
  #endif
  #if HAVE_D3D11
      {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
-@@ -1027,7 +1039,10 @@ static const struct MPOpts mp_default_opts = {
+@@ -1027,7 +1042,10 @@ static const struct MPOpts mp_default_opts = {
      .osd_duration = 1000,
  #if HAVE_LUA
      .lua_load_osc = true,
@@ -826,19 +901,23 @@ index a432414551..bb81c7f036 100644
      .lua_ytdl_raw_options = NULL,
      .lua_load_stats = true,
 diff --git a/options/options.h b/options/options.h
-index 1f8e7cb093..6b2c514eec 100644
+index 1f8e7cb093..c3ffd9c914 100644
 --- a/options/options.h
 +++ b/options/options.h
-@@ -86,12 +86,19 @@ typedef struct mp_vo_opts {
+@@ -85,13 +85,23 @@ typedef struct mp_vo_opts {
+     double timing_offset;
      int video_sync;
  
++    bool android_gl_trace;
      struct m_geometry android_surface_size;
 +    bool android_hdr_output;
 +    bool android_native_dolby;
 +    int android_native_hdr;
++    bool android_native_hdr_p7_base;
 +    int64_t android_native_dolby_surface;
 +    bool android_dovi_yuv;
 +    bool android_dovi_dual;
++    bool android_native_dolby_p7_mel;
  
      struct m_geometry d3d11_composition_size;
  
@@ -849,7 +928,7 @@ index 1f8e7cb093..6b2c514eec 100644
  } mp_vo_opts;
  
  // Subtitle options needed by the subtitle decoders/renderers.
-@@ -166,6 +173,9 @@ struct mp_bluray_opts {
+@@ -166,6 +176,9 @@ struct mp_bluray_opts {
      int min_title_length;
      int region;
      int uo_restriction;
@@ -860,7 +939,7 @@ index 1f8e7cb093..6b2c514eec 100644
  
  struct dvda_opts {
 diff --git a/player/command.c b/player/command.c
-index 981fe47a4d..86f91d5bef 100644
+index 981fe47a4d..379e125654 100644
 --- a/player/command.c
 +++ b/player/command.c
 @@ -34,6 +34,7 @@
@@ -900,7 +979,15 @@ index 981fe47a4d..86f91d5bef 100644
          {"dolby-vision-level", SUB_PROP_INT(p.dv_level),
                          .unavailable = !p.dovi},
          {"metadata", SUB_PROP_KEYVALUE_LIST(tag_list),
-@@ -3148,6 +3157,29 @@ static int mp_property_gpu_context(void *ctx, struct m_property *p, int action,
+@@ -2604,6 +2613,7 @@ static int property_imgparams(const struct mp_image_params *p, int action, void
+             SUB_PROP_STR(m_opt_choice_str(pl_csp_prim_names, p->color.primaries))},
+         {"gamma",
+             SUB_PROP_STR(m_opt_choice_str(pl_csp_trc_names, p->color.transfer))},
++        {"dolby-vision-mel", SUB_PROP_BOOL(p->dovi_mel)},
+         {"sig-peak", SUB_PROP_FLOAT(p->color.hdr.max_luma / MP_REF_WHITE)},
+         {"light",
+             SUB_PROP_STR(m_opt_choice_str(mp_csp_light_names, p->light))},
+@@ -3148,6 +3158,31 @@ static int mp_property_gpu_context(void *ctx, struct m_property *p, int action,
                                  mpctx->video_out->context_name : NULL);
  }
  
@@ -915,11 +1002,13 @@ index 981fe47a4d..86f91d5bef 100644
 +             : mpctx->opts->vo->android_native_dolby))
 +        vo_control(mpctx->video_out, VOCTRL_GET_ANDROID_NATIVE_DOLBY, &state);
 +    struct m_sub_property props[] = {
++        {"mel-conversion", SUB_PROP_BOOL(!hdr && mpctx->opts->vo->android_native_dolby_p7_mel)},
 +        {"active", SUB_PROP_BOOL(state.active)},
 +        {"failed", SUB_PROP_BOOL(state.failed)},
 +        {"decoder-failed", SUB_PROP_BOOL(state.decoder_failed)},
 +        {"frames", SUB_PROP_INT64(state.frames)},
 +        {"osd-updates", SUB_PROP_INT64(state.osd_updates)},
++        {"base-layer-only", SUB_PROP_BOOL(hdr && mpctx->opts->vo->android_native_hdr_p7_base)},
 +        {"transfer", SUB_PROP_STR(hdr ? (mpctx->opts->vo->android_native_hdr == 18 ? "hlg" :
 +                                           mpctx->opts->vo->android_native_hdr == 16 ? "pq" : "no") : "dolby")},
 +        {0}
@@ -930,7 +1019,7 @@ index 981fe47a4d..86f91d5bef 100644
  static int mp_property_osd_dim(void *ctx, struct m_property *prop,
                                 int action, void *arg)
  {
-@@ -4814,6 +4846,8 @@ static const struct m_property mp_properties_base[] = {
+@@ -4814,6 +4849,8 @@ static const struct m_property mp_properties_base[] = {
      {"estimated-frame-number", mp_property_frame_number},
  
      {"osd-dimensions", mp_property_osd_dim},
@@ -939,7 +1028,7 @@ index 981fe47a4d..86f91d5bef 100644
      M_PROPERTY_ALIAS("osd-width", "osd-dimensions/w"),
      M_PROPERTY_ALIAS("osd-height", "osd-dimensions/h"),
      M_PROPERTY_ALIAS("osd-par", "osd-dimensions/par"),
-@@ -6104,6 +6138,75 @@ static void cmd_seek(void *p)
+@@ -6104,6 +6141,75 @@ static void cmd_seek(void *p)
          mpctx->add_osd_seek_info |= OSD_SEEK_INFO_TEXT;
  }
  
@@ -1015,7 +1104,7 @@ index 981fe47a4d..86f91d5bef 100644
  static void cmd_revert_seek(void *p)
  {
      struct mp_cmd_ctx *cmd = p;
-@@ -7628,6 +7731,10 @@ static void cmd_notify_property(void *p)
+@@ -7628,6 +7734,10 @@ static void cmd_notify_property(void *p)
  
  const struct mp_cmd_def mp_cmds[] = {
      { "ignore", cmd_ignore, .is_ignore = true, .is_noisy = true, },
@@ -1026,7 +1115,7 @@ index 981fe47a4d..86f91d5bef 100644
  
      { "seek", cmd_seek,
          {
-@@ -8493,9 +8600,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8493,9 +8603,23 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
      if (flags & UPDATE_VO && mpctx->video_out) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_pin *filter_src = mpctx->vo_chain ? mpctx->vo_chain->filter_src : NULL;
@@ -1051,7 +1140,7 @@ index 981fe47a4d..86f91d5bef 100644
          if (filter_src) {
              reinit_video_chain_src(mpctx, NULL);
              if (mpctx->vo_chain) {
-@@ -8505,9 +8626,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8505,9 +8629,16 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          } else {
              reinit_video_chain(mpctx);
          }
@@ -1071,7 +1160,7 @@ index 981fe47a4d..86f91d5bef 100644
  
          mp_wakeup_core(mpctx);
      }
-@@ -8538,11 +8666,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8538,11 +8669,22 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
          struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
          if (dec) {
@@ -1095,7 +1184,7 @@ index 981fe47a4d..86f91d5bef 100644
              if (last_pts != MP_NOPTS_VALUE)
                  queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
          }
-@@ -8563,10 +8702,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+@@ -8563,10 +8705,17 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
  
      if (flags & UPDATE_VD && mpctx->vo_chain) {
          struct track *track = mpctx->current_track[0][STREAM_VIDEO];
@@ -1312,8 +1401,176 @@ index a4fb7e6358..b0bf1db971 100644
      if (vo_c->filter->reconfig_happened) {
          mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
          vo_c->filter->reconfig_happened = false;
+diff --git a/stream/curl_seek_cache.h b/stream/curl_seek_cache.h
+new file mode 100644
+index 0000000000..fe0ce4225d
+--- /dev/null
++++ b/stream/curl_seek_cache.h
+@@ -0,0 +1,140 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/* Bounded raw-byte cache for HTTP streams which alternate between track ranges.
++ * Caller serializes access. A block exposes only a contiguous initialized span;
++ * unrelated partial writes must never make a hole readable. */
++#ifndef MPV_CURL_SEEK_CACHE_H
++#define MPV_CURL_SEEK_CACHE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++struct mp_curl_cache_block {
++    uint64_t offset, age;
++    size_t begin, end;
++    unsigned char *data;
++};
++
++struct mp_curl_cache {
++    struct mp_curl_cache_block *blocks;
++    size_t count, block_size;
++    uint64_t clock;
++};
++
++static inline void mp_curl_cache_init(struct mp_curl_cache *c, size_t budget)
++{
++    *c = (struct mp_curl_cache){0};
++    if (!budget)
++        return;
++    c->block_size = budget < 256 * 1024 ? budget : 256 * 1024;
++    c->count = budget / c->block_size;
++    c->blocks = calloc(c->count, sizeof(*c->blocks));
++    if (!c->blocks)
++        c->count = 0;
++}
++
++static inline void mp_curl_cache_uninit(struct mp_curl_cache *c)
++{
++    for (size_t i = 0; i < c->count; i++)
++        free(c->blocks[i].data);
++    free(c->blocks);
++    *c = (struct mp_curl_cache){0};
++}
++
++static inline struct mp_curl_cache_block *mp_curl_cache_find(
++    struct mp_curl_cache *c, uint64_t offset)
++{
++    for (size_t i = 0; i < c->count; i++) {
++        struct mp_curl_cache_block *b = &c->blocks[i];
++        if (b->data && b->end > b->begin && b->offset == offset)
++            return b;
++    }
++    return NULL;
++}
++
++static inline bool mp_curl_cache_has(struct mp_curl_cache *c, uint64_t pos)
++{
++    if (!c->count)
++        return false;
++    uint64_t offset = pos - pos % c->block_size;
++    struct mp_curl_cache_block *b = mp_curl_cache_find(c, offset);
++    size_t in = pos - offset;
++    return b && in >= b->begin && in < b->end;
++}
++
++static inline size_t mp_curl_cache_get(struct mp_curl_cache *c, uint64_t pos,
++                                     void *out, size_t size)
++{
++    if (!size || !mp_curl_cache_has(c, pos))
++        return 0;
++    uint64_t offset = pos - pos % c->block_size;
++    struct mp_curl_cache_block *b = mp_curl_cache_find(c, offset);
++    size_t in = pos - offset;
++    size_t n = size < b->end - in ? size : b->end - in;
++    memcpy(out, b->data + in, n);
++    b->age = ++c->clock;
++    return n;
++}
++
++static inline void mp_curl_cache_put(struct mp_curl_cache *c, uint64_t pos,
++                                    const void *data, size_t size)
++{
++    while (c->count && size && pos < UINT64_MAX) {
++        uint64_t offset = pos - pos % c->block_size;
++        size_t in = pos - offset;
++        size_t n = size < c->block_size - in ? size : c->block_size - in;
++        if (n > UINT64_MAX - pos)
++            n = UINT64_MAX - pos;
++        struct mp_curl_cache_block *b = mp_curl_cache_find(c, offset);
++        if (!b) {
++            b = &c->blocks[0];
++            for (size_t i = 0; i < c->count; i++) {
++                if (!c->blocks[i].data) {
++                    b = &c->blocks[i];
++                    break;
++                }
++                if (c->blocks[i].age < b->age)
++                    b = &c->blocks[i];
++            }
++            if (!b->data)
++                b->data = malloc(c->block_size);
++            if (!b->data)
++                return; // Caching must not make playback fail on allocation.
++            b->offset = offset;
++            b->begin = b->end = 0;
++        }
++        memcpy(b->data + in, data, n);
++        if (b->end == b->begin || in > b->end || in + n < b->begin) {
++            b->begin = in;
++            b->end = in + n;
++        } else {
++            if (in < b->begin)
++                b->begin = in;
++            if (in + n > b->end)
++                b->end = in + n;
++        }
++        b->age = ++c->clock;
++        pos += n;
++        data = (const unsigned char *)data + n;
++        size -= n;
++    }
++}
++
++#endif
+diff --git a/stream/stream.h b/stream/stream.h
+index ed40d06a4c..58e9f4f005 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -54,6 +54,7 @@
+ #define STREAM_LOCAL_FS_ONLY      (1 << 5) // stream_file only, no URLs
+ #define STREAM_LESS_NOISE         (1 << 6) // try to log errors only
+ #define STREAM_ALLOW_PARTIAL_READ (1 << 7) // allows partial read with stream_read_file()
++#define STREAM_NO_SEEK_CACHE      (1 << 8) // the caller already caches raw byte ranges
+ 
+ // Default flags used by stream_read_file().
+ #define STREAM_READ_FILE_FLAGS_DEFAULT \
+@@ -428,6 +429,9 @@ void mp_url_unescape_inplace(char *buf);
+ char *mp_url_unescape(void *talloc_ctx, const char *url);
+ char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
+ 
++// stream_bluray.c
++struct stream *stream_open_disc_image(struct stream *input, int origin);
++
+ // stream_memory.c
+ struct stream *stream_memory_open(struct mpv_global *global, void *data, int len);
+ 
 diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
-index e4454999d3..e477b65220 100644
+index e4454999d3..4a630595a3 100644
 --- a/stream/stream_bluray.c
 +++ b/stream/stream_bluray.c
 @@ -44,6 +44,9 @@
@@ -1353,7 +1610,17 @@ index e4454999d3..e477b65220 100644
      },
  };
  
-@@ -137,6 +147,16 @@ struct bluray_priv_s {
+@@ -122,7 +132,8 @@ struct bd_overlay_plane {
+ struct bluray_priv_s {
+     BLURAY *bd;
+     struct mp_log *bluray_log;
+-    bool probing;               // open is an .iso auto-detection probe
++    bool probing;               // opening a candidate disc image
++    bool borrowed_input;        // the caller owns the byte stream until open succeeds
+     BLURAY_TITLE_INFO *title_info;
+     int num_titles;
+     int current_angle;
+@@ -137,6 +148,16 @@ struct bluray_priv_s {
      int cfg_playlist;
      char *cfg_device;
  
@@ -1370,7 +1637,7 @@ index e4454999d3..e477b65220 100644
      struct mp_bluray_opts *opts;
      struct m_config_cache *opts_cache;
  
-@@ -598,6 +618,161 @@ static void bd_pick_lang(struct bd_lang_pick *pick, char **langs,
+@@ -598,6 +619,161 @@ static void bd_pick_lang(struct bd_lang_pick *pick, char **langs,
      }
  }
  
@@ -1532,7 +1799,7 @@ index e4454999d3..e477b65220 100644
  inline static int play_playlist(struct bluray_priv_s *priv, int playlist)
  {
      return bd_select_playlist(priv->bd, playlist);
-@@ -608,9 +783,8 @@ inline static int play_title(struct bluray_priv_s *priv, int title)
+@@ -608,9 +784,8 @@ inline static int play_title(struct bluray_priv_s *priv, int title)
      return bd_select_title(priv->bd, title);
  }
  
@@ -1543,14 +1810,15 @@ index e4454999d3..e477b65220 100644
      if (!priv)
          return;
  
-@@ -628,9 +802,27 @@ static void bluray_stream_close(stream_t *s)
+@@ -628,9 +803,43 @@ static void bluray_stream_close(stream_t *s)
      if (bluray_log == priv->bluray_log)
          bluray_log = NULL;
      mp_mutex_unlock(&bluray_log_lock);
 +    if (priv->iso_stream) {
 +        MP_INFO(s, "Remote ISO cache: %"PRIu64" hits, %"PRIu64" misses\n",
 +                priv->iso_cache_hits, priv->iso_cache_misses);
-+        free_stream(priv->iso_stream);
++        if (!priv->borrowed_input)
++            free_stream(priv->iso_stream);
 +        priv->iso_stream = NULL;
 +    }
      mp_mutex_destroy(&priv->overlay_lock);
@@ -1566,12 +1834,27 @@ index e4454999d3..e477b65220 100644
 +{
 +    bluray_priv_close(s, opaque);
 +}
++
++static int dvd_proxy_open(stream_t *s, struct bluray_priv_s *b)
++{
++    bd_close(b->bd);
++    b->bd = NULL;
++    b->iso_proxy_position = 0;
++    const struct mp_dvdnav_stream_cb callbacks = {
++        .seek = dvd_proxy_seek,
++        .read = dvd_proxy_read,
++        .close = dvd_proxy_close,
++    };
++    int title = b->cfg_title >= BLURAY_DEFAULT_TITLE
++              ? b->cfg_title : BLURAY_DEFAULT_TITLE;
++    return mp_dvdnav_open_external(s, b, &callbacks, title);
++}
 +#endif
 +
  static const char *bd_event_str(uint32_t event)
  {
  #if BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 3, 0)
-@@ -1525,17 +1717,64 @@ static int bluray_stream_open_internal(stream_t *s)
+@@ -1525,17 +1734,73 @@ static int bluray_stream_open_internal(stream_t *s)
      }
  
      char *device_tmp = mp_get_user_path(NULL, s->global, device);
@@ -1586,46 +1869,42 @@ index e4454999d3..e477b65220 100644
 -            MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
 -        ret = STREAM_UNSUPPORTED;
 -        goto err;
-+    bool remote = is_remote_url(device_tmp);
++    bool remote = b->iso_stream ? b->iso_stream->is_network || b->iso_stream->streaming
++                                : is_remote_url(device_tmp);
 +    int opened;
-+    if (remote) {
-+        b->iso_stream = stream_create(device_tmp, STREAM_READ | s->stream_origin,
-+                                      s->cancel, s->global);
++    if (b->iso_stream || remote) {
++        int cache_flag = b->opts->remote_cache_size > 0 ? STREAM_NO_SEEK_CACHE : 0;
++        if (!b->iso_stream) {
++            b->iso_stream = stream_create(device_tmp, STREAM_READ | s->stream_origin | cache_flag,
++                                          s->cancel, s->global);
++        }
 +        talloc_free(device_tmp);
 +        if (!b->iso_stream) {
 +            MP_ERR(s, "Couldn't open remote stream: %s\n", device);
 +            ret = STREAM_UNSUPPORTED;
 +            goto err;
 +        }
-+        b->iso_cache_entries = b->opts->remote_cache_size / BLURAY_REMOTE_CHUNK_SIZE;
++        b->iso_cache_entries = remote
++            ? b->opts->remote_cache_size / BLURAY_REMOTE_CHUNK_SIZE : 0;
 +        if (b->iso_cache_entries) {
 +            b->iso_cache = talloc_zero_array(b, struct bluray_remote_cache_entry,
 +                                             b->iso_cache_entries);
 +            if (!b->iso_cache)
 +                b->iso_cache_entries = 0;
 +        }
-+        b->remote_fast_mode = b->opts->remote_fast_open &&
++        b->remote_fast_mode = remote && b->opts->remote_fast_open &&
 +            (b->cfg_title == BLURAY_DEFAULT_TITLE ||
 +             b->cfg_title == BLURAY_PLAYLIST_TITLE);
-+        MP_INFO(s, "Opening remote Blu-ray ISO (block cache: %d MiB; fast open: %s)\n",
++        MP_INFO(s, "Opening Blu-ray/DVD ISO (block cache: %d MiB; fast open: %s)\n",
 +                b->iso_cache_entries, b->remote_fast_mode ? "yes" : "no");
-+        bd_proxy_prefetch_metadata(s, b);
++        if (remote)
++            bd_proxy_prefetch_metadata(s, b);
 +        opened = bd_open_stream(bd, b, bd_proxy_read_blocks);
-+        if (!opened) {
++        if (!opened || !bd_get_disc_info(bd)->bluray_detected) {
 +            MP_VERBOSE(s, "Remote image is not Blu-ray; probing DVD-Video: %s\n",
 +                       device);
-+            bd_close(bd);
-+            b->bd = NULL;
 +#if HAVE_DVDNAV
-+            b->iso_proxy_position = 0;
-+            const struct mp_dvdnav_stream_cb callbacks = {
-+                .seek = dvd_proxy_seek,
-+                .read = dvd_proxy_read,
-+                .close = dvd_proxy_close,
-+            };
-+            int title = b->cfg_title >= BLURAY_DEFAULT_TITLE
-+                      ? b->cfg_title : BLURAY_DEFAULT_TITLE;
-+            return mp_dvdnav_open_external(s, b, &callbacks, title);
++            return dvd_proxy_open(s, b);
 +#else
 +            ret = STREAM_UNSUPPORTED;
 +            goto err;
@@ -1637,6 +1916,19 @@ index e4454999d3..e477b65220 100644
 +            keyfile = mp_get_user_path(NULL, s->global, b->opts->keyfile);
 +        opened = bd_open_disc(bd, device_tmp, keyfile);
 +        talloc_free(keyfile);
++#if HAVE_DVDNAV
++        if (!opened && !b->probing) {
++            // Preserve explicit bd:// access to local DVD images.
++            b->iso_stream = stream_create(device_tmp,
++                STREAM_READ | STREAM_LOCAL_FS_ONLY | s->stream_origin,
++                s->cancel, s->global);
++            if (b->iso_stream) {
++                talloc_free(device_tmp);
++                MP_VERBOSE(s, "Local image is not Blu-ray; probing DVD-Video.\n");
++                return dvd_proxy_open(s, b);
++            }
++        }
++#endif
 +        talloc_free(device_tmp);
 +        if (!opened) {
 +            if (!b->probing)
@@ -1647,7 +1939,7 @@ index e4454999d3..e477b65220 100644
      }
  
      if (!check_disc_info(s)) {
-@@ -1544,19 +1783,23 @@ static int bluray_stream_open_internal(stream_t *s)
+@@ -1544,19 +1809,23 @@ static int bluray_stream_open_internal(stream_t *s)
      }
  
      /* check for available titles on disc */
@@ -1675,7 +1967,7 @@ index e4454999d3..e477b65220 100644
  
      /* parse titles information */
      struct MPOpts *mpopts = mp_get_config_group(NULL, s->global, &mp_opt_root);
-@@ -1566,6 +1809,8 @@ static int bluray_stream_open_internal(stream_t *s)
+@@ -1566,6 +1835,8 @@ static int bluray_stream_open_internal(stream_t *s)
      b->title_to_playlist = talloc_array(b, uint32_t, b->num_titles);
      for (int i = 0; i < b->num_titles; i++) {
          b->title_to_playlist[i] = (uint32_t)-1;
@@ -1684,8 +1976,380 @@ index e4454999d3..e477b65220 100644
          /* the information we're accessing (duration, playlist, angle count)
           * doesn't depend on the angle */
          BLURAY_TITLE_INFO *ti = bd_get_title_info(bd, i, 0);
+@@ -1679,10 +1950,25 @@ err:
+     return ret;
+ }
+ 
+-static int bluray_stream_open(stream_t *s)
++struct bluray_image_probe {
++    struct stream *input;
++    struct bluray_priv_s *reader;
++};
++
++static int bluray_stream_open(stream_t *s, const struct stream_open_args *args)
+ {
+     struct bluray_priv_s *b = talloc_zero(s, struct bluray_priv_s);
+     s->priv = b;
++    struct bluray_image_probe *probe = args->special_arg;
++    if (probe) {
++        s->log = mp_log_new(s, probe->input->log, "/disc-image");
++        probe->reader = b;
++        b->iso_stream = probe->input;
++        b->borrowed_input = true;
++        b->probing = true;
++        b->cfg_device = talloc_strdup(b, probe->input->url);
++        s->url = talloc_strdup(s, probe->input->url);
++    }
+ 
+     bstr title, bdevice, rest = { .len = 0 };
+     bstr_split_tok(bstr0(s->path), "/", &title, &bdevice);
+@@ -1728,18 +2014,78 @@ static int bluray_stream_open(stream_t *s)
+         b->cfg_title = t;
+     }
+ 
+-    b->cfg_device = bstrto0(b, bdevice);
++    if (!probe)
++        b->cfg_device = bstrto0(b, bdevice);
+ 
+     return bluray_stream_open_internal(s);
+ }
+ 
+ const stream_info_t stream_info_bluray = {
+     .name = "bd",
+-    .open = bluray_stream_open,
++    .open2 = bluray_stream_open,
+     .protocols = (const char*const[]){ "bd", "br", "bluray", NULL },
+     .stream_origin = STREAM_ORIGIN_UNSAFE,
+ };
+ 
++static bool has_disc_image_descriptor(struct stream *s)
++{
++    // ISO 9660 and UDF place volume recognition descriptors after the 32 KiB
++    // system area. Peek into the existing buffer so ordinary media can reuse
++    // these bytes, and require the disc readers to verify the actual layout.
++    enum { sector_size = 2048, first_sector = 16, last_sector = 31 };
++    uint8_t prefix[last_sector * sector_size + 7];
++    int size = stream_read_peek(s, prefix, sizeof(prefix));
++    bool udf_sequence = false;
++    for (int offset = first_sector * sector_size; offset + 7 <= size;
++         offset += sector_size)
++    {
++        const uint8_t *descriptor = prefix + offset;
++        if (descriptor[6] != 1)
++            continue;
++        if (descriptor[0] == 1 && !memcmp(descriptor + 1, "CD001", 5))
++            return true;
++        if (descriptor[0] != 0)
++            continue;
++        if (!memcmp(descriptor + 1, "BEA01", 5))
++            udf_sequence = true;
++        if (udf_sequence && (!memcmp(descriptor + 1, "NSR02", 5) ||
++                             !memcmp(descriptor + 1, "NSR03", 5)))
++            return true;
++        if (!memcmp(descriptor + 1, "TEA01", 5))
++            udf_sequence = false;
++    }
++    return false;
++}
++
++struct stream *stream_open_disc_image(struct stream *input, int origin)
++{
++    if (origin != STREAM_ORIGIN_DIRECT || !input->access_references ||
++        !input->seekable || input->is_directory || input->demuxer ||
++        stream_tell(input) != 0 || !has_disc_image_descriptor(input))
++        return input;
++
++    struct bluray_image_probe probe = {.input = input};
++    struct stream_open_args args = {
++        .url = "bd://",
++        .global = input->global,
++        .cancel = input->cancel,
++        .flags = origin | STREAM_SILENT,
++        .sinfo = &stream_info_bluray,
++        .special_arg = &probe,
++    };
++    struct stream *disc;
++    // Keep the original stream usable if this is a data ISO or the disc
++    // reader cannot open it. Only hand off ownership after a complete open.
++    if (stream_create_with_args(&args, &disc) != STREAM_OK) {
++        stream_seek(input, 0);
++        return input;
++    }
++    probe.reader->borrowed_input = false;
++    disc->is_network = input->is_network;
++    disc->server_filename = talloc_strdup(disc, input->server_filename);
++    return disc;
++}
++
+ static bool check_bdmv(const char *path)
+ {
+     if (strcasecmp(mp_basename(path), "MovieObject.bdmv"))
+@@ -1799,21 +2145,6 @@ static int bdmv_dir_stream_open(stream_t *stream)
+     if (!path)
+         goto unsupported;
+ 
+-    // Hand the .iso to libbluray as the device. Opening validates the disc
+-    // info, so it doubles as the probe (see priv->probing).
+-    if (bstr_case_endswith(bstr0(path), bstr0(".iso"))) {
+-        priv->cfg_device = talloc_strdup(priv, path);
+-        priv->probing = stream->autoprobed;
+-        int r = bluray_stream_open_internal(stream);
+-        if (r != STREAM_OK) {
+-            if (priv->probing)
+-                goto unsupported;
+-            return r;
+-        }
+-        MP_INFO(stream, "Blu-ray ISO image detected. Redirecting to bluray://\n");
+-        return r;
+-    }
+-
+     // We allow the path to point to a directory containing BDMV/, a
+     // directory containing MovieObject.bdmv, or that file itself.
+     if (!check_bdmv(path)) {
+diff --git a/stream/stream_curl.c b/stream/stream_curl.c
+index d1a93708e7..2c6261f685 100644
+--- a/stream/stream_curl.c
++++ b/stream/stream_curl.c
+@@ -32,6 +32,7 @@
+ 
+ #include "stream.h"
+ #include "stream_curl.h"
++#include "curl_seek_cache.h"
+ 
+ #include "common/common.h"
+ #include "common/global.h"
+@@ -83,6 +84,7 @@ struct curl_opts {
+     int max_retries;
+     double connect_timeout;
+     int64_t buffer_size;
++    int64_t seek_cache_size;
+     int64_t max_request_size;
+ };
+ 
+@@ -115,6 +117,8 @@ const struct m_sub_options curl_conf = {
+         {"connect-timeout", OPT_DOUBLE(connect_timeout), M_RANGE(0, 600)},
+         {"buffer-size", OPT_BYTE_SIZE(buffer_size),
+             M_RANGE(2 * CURL_MAX_WRITE_SIZE, M_MAX_MEM_BYTES)},
++        {"seek-cache-size", OPT_BYTE_SIZE(seek_cache_size),
++            M_RANGE(0, 256 * 1024 * 1024)},
+         {"max-request-size", OPT_BYTE_SIZE(max_request_size),
+             M_RANGE(0, M_MAX_MEM_BYTES)},
+         {0}
+@@ -128,6 +132,7 @@ const struct m_sub_options curl_conf = {
+         .max_retries = 5,
+         .connect_timeout = 30,
+         .buffer_size = 4 << 20, // 4 MiB
++        .seek_cache_size = 32 << 20, // allocated lazily, separate from demux cache
+         .max_request_size = 0,
+     },
+     .size = sizeof(struct curl_opts),
+@@ -195,6 +200,13 @@ struct priv {
+     uint8_t *buffer;
+     size_t buffer_size;
+     size_t head, tail, count;
++    // Logical reader and the beginning of the producer's unread ring. Cached
++    // seeks can move the reader without canceling the current HTTP transfer.
++    uint64_t read_pos, network_pos;
++    size_t seek_prefetch;
++    int64_t seek_prefetch_until;
++    struct mp_curl_cache seek_cache;
++    uint64_t seek_cache_hits, seek_cache_misses;
+     bool paused;         // write callback paused due to a full buffer
+     bool stream_eof;     // producer has delivered all data
+     bool stream_error;   // unrecoverable error
+@@ -202,6 +214,25 @@ struct priv {
+     struct mp_icy *icy;  // ICY metadata state, dormant until Icy-MetaInt seen
+ };
+ 
++static bool seek_cache_enabled(struct priv *p)
++{
++    return p->seek_cache.count && p->seekable && p->content_size >= 0 &&
++           p->scheme->proto == MP_CURL_PROTO_HTTP;
++}
++
++// Save unread prefetch before replacing a transfer. Previously a track switch
++// discarded up to curl-buffer-size bytes, only to fetch them again on return.
++// Caller holds p->mtx; only validated, byte-addressable body data is retained.
++static void cache_unread(struct priv *p)
++{
++    if (!seek_cache_enabled(p) || !p->count)
++        return;
++    size_t first = MPMIN(p->count, p->buffer_size - p->head);
++    mp_curl_cache_put(&p->seek_cache, p->network_pos, p->buffer + p->head, first);
++    mp_curl_cache_put(&p->seek_cache, p->network_pos + first,
++                      p->buffer, p->count - first);
++}
++
+ // Curl thread
+ 
+ enum cmd_kind {
+@@ -255,8 +286,25 @@ static void run_cmd(void *arg)
+             c->p->active = false;
+         }
+         mp_mutex_lock(&c->p->mtx);
+-        if (c->drop)
++        if (c->drop) {
++            cache_unread(c->p);
++            uint64_t distance = c->pos > c->p->network_pos
++                              ? c->pos - c->p->network_pos
++                              : c->p->network_pos - c->pos;
++            // A distant track switch can cancel a new transfer as soon as its
++            // first tiny packet arrives. Amortize that request by retaining a
++            // window first. Stay below capacity so curl's full-buffer pause
++            // can never leave the reader waiting for an impossible size.
++            c->p->seek_prefetch = seek_cache_enabled(c->p) &&
++                                  distance > c->p->buffer_size
++                ? MPMIN(c->p->buffer_size - CURL_MAX_WRITE_SIZE,
++                        MPMIN(4 << 20, c->p->seek_cache.count * c->p->seek_cache.block_size))
++                : 0;
++            c->p->seek_prefetch_until = c->p->seek_prefetch
++                                    ? mp_time_ns() + MP_TIME_MS_TO_NS(1000) : 0;
+             c->p->head = c->p->tail = c->p->count = 0;
++            c->p->network_pos = c->pos;
++        }
+         c->p->paused = false;
+         c->p->stream_eof = false;
+         c->p->stream_error = false;
+@@ -1042,19 +1090,98 @@ static int curl_fill_buffer(struct stream *s, void *buffer, int max_len)
+ 
+     mp_mutex_lock(&p->mtx);
+ 
+-    while (p->count == 0 && !p->stream_eof && !p->stream_error &&
++    while (seek_cache_enabled(p) && p->read_pos != p->network_pos &&
+            !atomic_load_explicit(&p->aborted, memory_order_relaxed))
+     {
+-        mp_cond_wait(&p->cond, &p->mtx);
++        if (p->read_pos > p->network_pos &&
++            p->read_pos - p->network_pos <= p->count)
++        {
++            size_t skip = p->read_pos - p->network_pos;
++            // Keep skipped prefetch available for a later backward seek.
++            cache_unread(p);
++            p->head = (p->head + skip) % p->buffer_size;
++            p->count -= skip;
++            p->network_pos = p->read_pos;
++            // A forward skip can empty a paused ring. Resume before waiting
++            // for more bytes, otherwise both producer and reader would wait.
++            if (p->paused && !p->stream_eof && !p->stream_error &&
++                p->buffer_size - p->count >= p->buffer_size / 2)
++            {
++                mp_mutex_unlock(&p->mtx);
++                cmd_async(p, CMD_UNPAUSE);
++                mp_mutex_lock(&p->mtx);
++            }
++            break;
++        }
++        size_t cached = mp_curl_cache_get(&p->seek_cache, p->read_pos,
++                                          buffer, max_len);
++        if (cached) {
++            p->read_pos += cached;
++            p->seek_cache_hits++;
++            mp_mutex_unlock(&p->mtx);
++            return cached;
++        }
++        // A nearby forward packet may not have arrived yet. Keep the existing
++        // connection and read through the small gap instead of canceling it
++        // after every audio chunk. Unread data is retained before advancing.
++        if (p->read_pos > p->network_pos &&
++            p->read_pos - p->network_pos <= p->buffer_size &&
++            !p->stream_eof && !p->stream_error)
++        {
++            if (!p->count) {
++                mp_cond_wait(&p->cond, &p->mtx);
++                continue;
++            }
++            cache_unread(p);
++            p->network_pos += p->count;
++            p->head = p->tail;
++            p->count = 0;
++            if (p->paused) {
++                mp_mutex_unlock(&p->mtx);
++                cmd_async(p, CMD_UNPAUSE);
++                mp_mutex_lock(&p->mtx);
++            }
++            continue;
++        }
++        // Only a miss changes the underlying transfer. Disjoint audio/video
++        // regions can therefore advance independently through a small cache.
++        uint64_t pos = p->read_pos;
++        p->seek_cache_misses++;
++        mp_mutex_unlock(&p->mtx);
++        cmd_sync(p, CMD_SEEK, pos, true);
++        mp_mutex_lock(&p->mtx);
++    }
++
++    // Cancellation can interrupt a read-through gap before reaching the
++    // logical position. Never return bytes from the abandoned physical cursor.
++    if (p->read_pos != p->network_pos) {
++        mp_mutex_unlock(&p->mtx);
++        return 0;
++    }
++
++    size_t need = p->seek_prefetch ? p->seek_prefetch : 1;
++    while ((p->count == 0 || (p->count < need && mp_time_ns() < p->seek_prefetch_until)) &&
++           !p->stream_eof && !p->stream_error &&
++           !atomic_load_explicit(&p->aborted, memory_order_relaxed))
++    {
++        if (p->count && p->seek_prefetch)
++            mp_cond_timedwait_until(&p->cond, &p->mtx, p->seek_prefetch_until);
++        else
++            mp_cond_wait(&p->cond, &p->mtx);
+     }
+ 
+     size_t copy = MPMIN((size_t)max_len, p->count);
++    p->seek_prefetch = 0;
+     if (copy > 0) {
+         size_t head_chunk = MPMIN(p->buffer_size - p->head, copy);
+         memcpy(buffer, p->buffer + p->head, head_chunk);
+         memcpy((char *)buffer + head_chunk, p->buffer, copy - head_chunk);
++        if (seek_cache_enabled(p))
++            mp_curl_cache_put(&p->seek_cache, p->network_pos, buffer, copy);
+         p->head = (p->head + copy) % p->buffer_size;
+         p->count -= copy;
++        p->network_pos += copy;
++        p->read_pos += copy;
+     }
+ 
+     bool unpause = p->paused && !p->stream_eof && !p->stream_error &&
+@@ -1073,6 +1200,17 @@ static int curl_seek(struct stream *s, int64_t pos)
+     struct priv *p = s->priv;
+     if (pos < 0)
+         return 0;
++    mp_mutex_lock(&p->mtx);
++    p->read_pos = pos;
++    bool cached = seek_cache_enabled(p) &&
++        (mp_curl_cache_has(&p->seek_cache, pos) ||
++         ((uint64_t)pos >= p->network_pos &&
++          ((uint64_t)pos - p->network_pos <= p->count ||
++           ((uint64_t)pos - p->network_pos <= p->buffer_size &&
++            !p->stream_eof && !p->stream_error))));
++    mp_mutex_unlock(&p->mtx);
++    if (cached)
++        return 1;
+     cmd_sync(p, CMD_SEEK, pos, true);
+     return 1;
+ }
+@@ -1114,6 +1252,7 @@ static void priv_destructor(void *ptr)
+     }
+     if (p->headers)
+         curl_slist_free_all(p->headers);
++    mp_curl_cache_uninit(&p->seek_cache);
+     mp_mutex_destroy(&p->mtx);
+     mp_cond_destroy(&p->cond);
+ }
+@@ -1176,6 +1315,10 @@ static int curl_open(stream_t *s, const struct stream_open_args *args)
+             p->request_end = oa->end_offset;
+     }
+ 
++    p->read_pos = p->network_pos = p->start_offset;
++    mp_curl_cache_init(&p->seek_cache,
++        args->flags & STREAM_NO_SEEK_CACHE ? 0 : p->opts->seek_cache_size);
++
+     mp_mutex_init(&p->mtx);
+     mp_cond_init(&p->cond);
+     p->aborted = false;
 diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
-index 19f724f9a4..6bb221bc6c 100644
+index 19f724f9a4..4da7c152fe 100644
 --- a/stream/stream_dvdnav.c
 +++ b/stream/stream_dvdnav.c
 @@ -49,6 +49,7 @@
@@ -1696,7 +2360,16 @@ index 19f724f9a4..6bb221bc6c 100644
  #include "demux/demux.h"
  #include "video/csputils.h"
  #include "video/out/vo.h"
-@@ -101,6 +102,10 @@ struct priv {
+@@ -56,6 +57,8 @@
+ #define TITLE_MENU -1
+ #define TITLE_LONGEST -2
+ 
++extern const stream_info_t stream_info_dvdnav;
++
+ #define DVD_TIMEBASE 90000
+ #define DVD_TIME_TO_S(x) ((x) / (double)(DVD_TIMEBASE))
+ #define DVD_TIME_FROM_S(x) ((int64_t)((x) * DVD_TIMEBASE))
+@@ -101,6 +104,10 @@ struct priv {
      int sub_physical;                   // 0..31 from DVDNAV_SPU_STREAM_CHANGE
      bool sub_visible;                   // SPU "on" flag from same event
  
@@ -1707,7 +2380,7 @@ index 19f724f9a4..6bb221bc6c 100644
      struct dvd_opts *opts;
  
      // What demux_disc maps the data by, see STREAM_CTRL_GET_SEGMENTS.
-@@ -1437,8 +1442,12 @@ static void stream_dvdnav_close(stream_t *s)
+@@ -1437,8 +1444,12 @@ static void stream_dvdnav_close(stream_t *s)
      if (priv->dvdnav)
          dvdnav_close(priv->dvdnav);
      priv->dvdnav = NULL;
@@ -1721,7 +2394,7 @@ index 19f724f9a4..6bb221bc6c 100644
      mp_mutex_destroy(&priv->lock);
  }
  
-@@ -1507,6 +1516,18 @@ static void set_dvd_languages(stream_t *stream)
+@@ -1507,6 +1518,18 @@ static void set_dvd_languages(stream_t *stream)
      talloc_free(opts);
  }
  
@@ -1740,7 +2413,7 @@ index 19f724f9a4..6bb221bc6c 100644
  static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
  {
      struct priv *priv = stream->priv;
-@@ -1527,22 +1548,15 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
+@@ -1527,22 +1550,15 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
      if (!priv->dvdnav)
          return NULL;
  
@@ -1765,7 +2438,7 @@ index 19f724f9a4..6bb221bc6c 100644
      mp_mutex_init(&priv->lock);
  
      priv->log = stream->log;
-@@ -1551,21 +1565,21 @@ static int open_s_internal(stream_t *stream)
+@@ -1551,21 +1567,21 @@ static int open_s_internal(stream_t *stream)
      priv->sub_visible = false;
      priv->tl_anchor = true;
  
@@ -1800,7 +2473,7 @@ index 19f724f9a4..6bb221bc6c 100644
  
      int32_t region_mask = 0;
      if (p->opts->region) {
-@@ -1650,6 +1664,64 @@ err:
+@@ -1650,6 +1666,68 @@ err:
      return ret;
  }
  
@@ -1858,13 +2531,35 @@ index 19f724f9a4..6bb221bc6c 100644
 +        return STREAM_UNSUPPORTED;
 +    }
 +
-+    MP_INFO(stream, "Remote DVD-Video ISO detected; using libdvdnav.\n");
++    // A bd:// image can turn out to be DVD-Video. demux_disc uses the stream
++    // identity to select DVD navigation and MPEG-PS track IDs; retaining bd
++    // would discard every DVD packet as an invalid Blu-ray presentation PID.
++    stream->info = &stream_info_dvdnav;
++    MP_INFO(stream, "DVD-Video ISO detected; using libdvdnav.\n");
 +    return finish_dvdnav_open(stream);
 +}
 +
  static int open_s(stream_t *stream)
  {
      struct priv *priv = talloc_zero(stream, struct priv);
+@@ -1717,6 +1795,8 @@ static int ifo_dvdnav_stream_open(stream_t *stream)
+     if (!path)
+         goto unsupported;
+ 
++#if !HAVE_LIBBLURAY
++    // DVD-only builds still use the local libdvdnav image entry point.
+     // Hand the .iso to libdvdnav as the device. Opening validates the VMG
+     // IFO, so it doubles as the probe (see priv->probing).
+     if (bstr_case_endswith(bstr0(path), bstr0(".iso"))) {
+@@ -1732,6 +1812,8 @@ static int ifo_dvdnav_stream_open(stream_t *stream)
+         return r;
+     }
+ 
++#endif
++
+     // We allow the path to point to a directory containing VIDEO_TS/, a
+     // directory containing VIDEO_TS.IFO, or that file itself.
+     if (!check_ifo(path)) {
 diff --git a/stream/stream_dvdnav.h b/stream/stream_dvdnav.h
 new file mode 100644
 index 0000000000..9286274bfb
@@ -1892,7 +2587,7 @@ index 0000000000..9286274bfb
 +
 +#endif
 diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
-index a1834e240a..32dc16eaa5 100644
+index a1834e240a..260dd95862 100644
 --- a/video/decode/vd_lavc.c
 +++ b/video/decode/vd_lavc.c
 @@ -248,6 +248,7 @@ typedef struct lavc_ctx {
@@ -1951,14 +2646,17 @@ index a1834e240a..32dc16eaa5 100644
  
      m_config_cache_update(ctx->opts_cache);
  
-@@ -870,6 +889,43 @@ static void init_avctx(struct mp_filter *vd)
+@@ -870,6 +889,58 @@ static void init_avctx(struct mp_filter *vd)
          goto error;
      }
  
 +#if HAVE_ANDROID
 +    if (native_surface && ctx->vo->opts->android_native_hdr) {
 +        int transfer = ctx->vo->opts->android_native_hdr;
-+        bool compatible = !c->dovi || (c->dv_profile == 8 && !c->dv_el_present &&
++        bool p7_base = ctx->vo->opts->android_native_hdr_p7_base &&
++            c->dovi && c->dv_profile == 7 &&
++            c->dv_bl_compatibility_id == 6 && transfer == 16;
++        bool compatible = !c->dovi || p7_base || (c->dv_profile == 8 && !c->dv_el_present &&
 +            c->dv_bl_compatibility_id == (transfer == 16 ? 1 : 4));
 +        bool codec_ok = !strcmp(lavc_codec->name, "hevc_mediacodec") ||
 +                        !strcmp(lavc_codec->name, "vp9_mediacodec") ||
@@ -1966,6 +2664,11 @@ index a1834e240a..32dc16eaa5 100644
 +        if (!ctx->use_hwdec || ctx->hwdec.copying || !codec_ok || !compatible ||
 +            av_opt_set_int(avctx, "native_hdr_output", transfer, AV_OPT_SEARCH_CHILDREN) < 0) {
 +            MP_ERR(vd, "Native HDR requires compatible PQ/HLG MediaCodec Surface decoding.\n");
++            goto error;
++        }
++        if (p7_base && av_opt_set_int(avctx, "native_hdr_p7_base", 1,
++                                    AV_OPT_SEARCH_CHILDREN) < 0) {
++            MP_ERR(vd, "This FFmpeg build cannot extract the P7 HDR10 base layer.\n");
 +            goto error;
 +        }
 +        // A prior native Dolby decoder can report its processed PQ output in
@@ -1979,14 +2682,21 @@ index a1834e240a..32dc16eaa5 100644
 +        }
 +    }
 +    if (native_surface && ctx->vo->opts->android_native_dolby) {
++        bool mel = ctx->vo->opts->android_native_dolby_p7_mel;
 +        if (!ctx->use_hwdec || ctx->hwdec.copying ||
 +            strcmp(lavc_codec->name, "hevc_mediacodec") != 0 ||
-+            (c->dv_profile != 5 && c->dv_profile != 8)) {
-+            MP_ERR(vd, "Native Dolby Vision requires P5/P8 MediaCodec Surface decoding.\n");
++            (mel ? c->dv_profile != 7 || c->dv_bl_compatibility_id != 6
++                 : c->dv_profile != 5 && c->dv_profile != 8)) {
++            MP_ERR(vd, "Native Dolby Vision requires P5/P8 or verified P7 MEL MediaCodec decoding.\n");
 +            goto error;
 +        }
 +        if (av_opt_set_int(avctx, "native_dolby_vision", 1, AV_OPT_SEARCH_CHILDREN) < 0) {
 +            MP_ERR(vd, "FFmpeg does not support native Dolby Vision Surface decoding.\n");
++            goto error;
++        }
++        if (mel && av_opt_set_int(avctx, "native_dolby_p7_mel", 1,
++                                  AV_OPT_SEARCH_CHILDREN) < 0) {
++            MP_ERR(vd, "FFmpeg does not support strict P7 MEL conversion.\n");
 +            goto error;
 +        }
 +    }
@@ -1995,7 +2705,7 @@ index a1834e240a..32dc16eaa5 100644
  #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
      if (avctx->width > 8192 || avctx->height > 8192) {
          MP_ERR(vd, "Frame size too big %" PRIu32 "x%" PRIu32 ".\n", avctx->width, avctx->height);
-@@ -898,6 +954,8 @@ static void init_avctx(struct mp_filter *vd)
+@@ -898,6 +969,8 @@ static void init_avctx(struct mp_filter *vd)
  
  error:
      MP_ERR(vd, "Could not open codec.\n");
@@ -2004,7 +2714,7 @@ index a1834e240a..32dc16eaa5 100644
      uninit_avctx(vd);
  }
  
-@@ -908,6 +966,7 @@ static void reset_avctx(struct mp_filter *vd)
+@@ -908,6 +981,7 @@ static void reset_avctx(struct mp_filter *vd)
      if (ctx->avctx && avcodec_is_open(ctx->avctx))
          avcodec_flush_buffers(ctx->avctx);
      ctx->flushing = false;
@@ -2012,7 +2722,7 @@ index a1834e240a..32dc16eaa5 100644
      ctx->hwdec_request_reinit = false;
      // Wait for the first keyframe after reset to ensure the decoder state is
      // valid. Seeking should already jump to a keyframe, so this is safe.
-@@ -1236,6 +1295,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+@@ -1236,6 +1310,12 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
  
      prepare_decoding(vd);
  
@@ -2025,7 +2735,7 @@ index a1834e240a..32dc16eaa5 100644
      if (ctx->wait_for_keyframe > 0 && pkt) {
          if (!pkt->keyframe && !ctx->intra_only) {
              MP_DBG(vd, "Waiting for keyframe after reinit (dropping frame).\n");
-@@ -1300,8 +1365,22 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1300,8 +1380,22 @@ static int decode_frame(struct mp_filter *vd)
              // start over in case we get new packets at some point in the future.
              // This must take the delay queue into account, so avctx returns EOF
              // until the delay queue has been drained.
@@ -2050,7 +2760,7 @@ index a1834e240a..32dc16eaa5 100644
          } else if (ret == AVERROR(EAGAIN)) {
              // just retry after caller writes a packet
          } else {
-@@ -1316,6 +1395,59 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1316,6 +1410,59 @@ static int decode_frame(struct mp_filter *vd)
      // data.
      mp_assert(ctx->pic->buf[0]);
  
@@ -2110,6 +2820,23 @@ index a1834e240a..32dc16eaa5 100644
      struct mp_image *mpi = mp_image_from_av_frame(ctx->pic);
      if (!mpi) {
          av_frame_unref(ctx->pic);
+@@ -1347,6 +1494,16 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+ 
+     int ret = decode_frame(vd);
+ 
++    if (ctx->hwdec_failed && native_surface_requested(ctx)) {
++        // Native presentation cannot consume the software/copy-back frames
++        // selected by the generic fallback loop. Report runtime failures just
++        // like initialization failures and let the host reload with a GPU VO.
++        MP_ERR(vd, "Native Surface decoding failed; host GPU recovery required.\n");
++        vo_control(ctx->vo, VOCTRL_ANDROID_NATIVE_DOLBY_DECODER_FAILED, NULL);
++        uninit_avctx(vd);
++        return AVERROR_EOF;
++    }
++
+     if (ctx->hwdec_failed) {
+         // Failed hardware decoding? Try the next one, and eventually software.
+         struct demux_packet **pkts = ctx->sent_packets;
 diff --git a/video/dovi_mel.h b/video/dovi_mel.h
 new file mode 100644
 index 0000000000..6e9cd58717
@@ -2161,6 +2888,165 @@ index 6b62eb81af..5f1a9245f8 100644
  
      // List of allowed IMGFMT_s, terminated with 0.
      // If NULL, all software formats are considered to be supported.
+diff --git a/video/mp_image.c b/video/mp_image.c
+index a90c1273c5..03236fa4e7 100644
+--- a/video/mp_image.c
++++ b/video/mp_image.c
+@@ -38,6 +38,7 @@
+ #include "fmt-conversion.h"
+ #include "hwdec.h"
+ #include "mp_image.h"
++#include "video/dovi_mel.h"
+ #include "osdep/threads.h"
+ #include "sws_utils.h"
+ #include "out/placebo/utils.h"
+@@ -570,6 +571,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
+     dst->params.sys_orig = src->params.sys_orig;
+     dst->params.no_dovi = src->params.no_dovi;
+     dst->params.no_enhancement_layer = src->params.no_enhancement_layer;
++    dst->params.dovi_mel = src->params.dovi_mel;
+ 
+     // ensure colorspace consistency
+     enum pl_color_system dst_forced_csp = mp_image_params_get_forced_csp(&dst->params);
+@@ -1210,6 +1212,7 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+     if (sd) {
+ #ifdef PL_HAVE_LAV_DOLBY_VISION
+         const AVDOVIMetadata *metadata = (const AVDOVIMetadata *)sd->buf->data;
++        dst->params.dovi_mel = mp_dovi_is_mel(metadata);
+         dst->dovi = dovi = av_buffer_alloc(sizeof(struct pl_dovi_metadata));
+         MP_HANDLE_OOM(dovi);
+         pl_map_avdovi_metadata(&dst->params.color, &dst->params.repr,
+diff --git a/video/mp_image.h b/video/mp_image.h
+index f5c1562815..26c61a71f4 100644
+--- a/video/mp_image.h
++++ b/video/mp_image.h
+@@ -66,6 +66,8 @@ struct mp_image_params {
+     // Flags for f_enhancement_pair.c to not inherit flags from EL.
+     bool no_dovi;
+     bool no_enhancement_layer;
++    // Original decoded RPU is canonical zero-residual MEL. Not inherited from EL.
++    bool dovi_mel;
+ };
+ 
+ /* Memory management:
+diff --git a/video/out/gpu/hwdec.h b/video/out/gpu/hwdec.h
+index ea29b0dc2f..0b5f5e1cf1 100644
+--- a/video/out/gpu/hwdec.h
++++ b/video/out/gpu/hwdec.h
+@@ -66,6 +66,12 @@ struct ra_hwdec_mapper {
+     // the mapped textures contain a full copy.
+     struct mp_image *src;
+ 
++    // The legacy GPU renderer can clamp samples from a padded RGB texture.
++    // The mapper can return a visible rect in plane 0 texels. An empty
++    // rectangle lets the renderer sample the entire texture.
++    bool can_clamp_crop;
++    struct mp_rect sample_crop;
++
+     // The mapped textures and metadata about them. These fields change if a
+     // new frame is mapped (or unmapped), but otherwise remain constant.
+     // The common code won't mess with these, so you can e.g. set them in the
+diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
+index 6122e51422..d10ff2efea 100644
+--- a/video/out/gpu/video.c
++++ b/video/out/gpu/video.c
+@@ -95,6 +95,7 @@ struct image {
+     int w, h; // logical size (after transformation)
+     struct gl_transform transform; // rendering transformation
+     int padding; // number of leading padding components (e.g. 2 = rg is padding)
++    struct mp_rect sample_crop; // bounds in plane texels, or empty for no clamp
+ };
+ 
+ // A named image, for user scripting purposes
+@@ -911,6 +912,11 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
+ 
+         get_transform(t->w, t->h, p->image_params.rotate, t->flipped,
+                       &img[n].transform);
++        if (n == 0 && vimg->hwdec_mapped) {
++            img[n].sample_crop = p->hwdec_mapper->sample_crop;
++            img[n].transform.t[0] += img[n].sample_crop.x0;
++            img[n].transform.t[1] += img[n].sample_crop.y0;
++        }
+         if (p->image_params.rotate % 180 == 90)
+             MPSWAP(int, img[n].w, img[n].h);
+ 
+@@ -1233,6 +1239,32 @@ static void pass_prepare_src_tex(struct gl_video *p)
+         gl_sc_uniform_vec2(sc, texture_off, (float *)s->transform.t);
+         gl_sc_uniform_vec2(sc, pixel_size, (float[]){1.0f / f[0],
+                                                      1.0f / f[1]});
++        struct mp_rect crop = s->sample_crop;
++        if (mp_rect_w(crop) > 0) {
++            // External YUV textures can filter chroma beyond the luma bounds.
++            // Reconstruct bilinear samples from exact texels at the edges.
++            char *lo = mp_tprintf(32, "texture_min%d", n);
++            char *hi = mp_tprintf(32, "texture_max%d", n);
++            gl_sc_uniform_vec2(sc, lo, (float[]){crop.x0, crop.y0});
++            gl_sc_uniform_vec2(sc, hi, (float[]){crop.x1 - 1, crop.y1 - 1});
++            PRELUDE("vec4 sample_texture%d(vec2 pos) {\n"
++                    "    vec2 lower = %s, upper = %s;\n"
++                    "    vec2 px = clamp(pos * texture_size%d - 0.5, lower, upper);\n"
++                    "    if (all(greaterThanEqual(px, lower + 1.0)) &&\n"
++                    "        all(lessThanEqual(px, upper - 1.0)))\n"
++                    "        return texture(texture%d, pos);\n"
++                    "    ivec2 a = ivec2(floor(px));\n"
++                    "    ivec2 b = min(a + ivec2(1), ivec2(upper));\n"
++                    "    vec2 f = fract(px);\n"
++                    "    vec4 top = mix(texelFetch(texture%d, a, 0),\n"
++                    "                   texelFetch(texture%d, ivec2(b.x, a.y), 0), f.x);\n"
++                    "    vec4 bottom = mix(texelFetch(texture%d, ivec2(a.x, b.y), 0),\n"
++                    "                      texelFetch(texture%d, b, 0), f.x);\n"
++                    "    return mix(top, bottom, f.y);\n"
++                    "}\n", n, lo, hi, n, n, n, n, n, n);
++        } else {
++            PRELUDE("#define sample_texture%d(pos) texture(texture%d, (pos))\n", n, n);
++        }
+     }
+ }
+ 
+@@ -1442,7 +1474,7 @@ static void copy_image(struct gl_video *p, unsigned int *offset, struct image im
+         img.multiplier *= 1.0 / (tex_max - 1);
+     }
+ 
+-    GLSLF("color.%s = %f * vec4(texture(texture%d, texcoord%d)).%s;\n",
++    GLSLF("color.%s = %f * vec4(sample_texture%d(texcoord%d)).%s;\n",
+           dst, img.multiplier, id, id, src);
+ 
+     *offset += count;
+@@ -1488,8 +1520,8 @@ static void hook_prelude(struct gl_video *p, const char *name, int id,
+     }
+ 
+     // Set up the sampling functions
+-    GLSLHF("#define %s_tex(pos) (%s_mul * vec4(texture(%s_raw, pos)).%s)\n",
+-           name, name, name, crap);
++    GLSLHF("#define %s_tex(pos) (%s_mul * vec4(sample_texture%d(pos)).%s)\n",
++           name, name, id, crap);
+ 
+     if (p->ra->caps & RA_CAP_GATHER) {
+         GLSLHF("#define %s_gather(pos, c) (%s_mul * vec4("
+@@ -3869,6 +3901,9 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
+         if (!p->hwdec_mapper)
+             goto error;
+ 
++        // Custom shaders can sample the raw texture directly, so their
++        // texture still needs to be bounded by the mapper.
++        p->hwdec_mapper->can_clamp_crop = !p->opts.user_shaders || !p->opts.user_shaders[0];
+         pass_describe(p, "map frame (hwdec)");
+         timer_pool_start(p->upload_timer);
+         bool ok = ra_hwdec_mapper_map(p->hwdec_mapper, vimg->mpi) >= 0;
+@@ -3882,10 +3917,11 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
+ 
+         if (ok) {
+             struct ra_tex **tex = p->hwdec_mapper->tex;
++            struct mp_rect crop = p->hwdec_mapper->sample_crop;
+             for (int n = 0; n < p->plane_count; n++) {
+                 vimg->planes[n] = (struct texplane){
+-                    .w = tex[n]->params.w,
+-                    .h = tex[n]->params.h,
++                    .w = n == 0 && mp_rect_w(crop) > 0 ? mp_rect_w(crop) : tex[n]->params.w,
++                    .h = n == 0 && mp_rect_h(crop) > 0 ? mp_rect_h(crop) : tex[n]->params.h,
+                     .tex = tex[n],
+                     .flipped = p->image_params.vflip,
+                 };
 diff --git a/video/out/hwdec/android_yuv_shaders.h b/video/out/hwdec/android_yuv_shaders.h
 new file mode 100644
 index 0000000000..a2152115cc
@@ -2199,10 +3085,15 @@ index 0000000000..a2152115cc
 +    "  plane_v = yuv.z;\n"
 +    "}\n";
 diff --git a/video/out/hwdec/hwdec_aimagereader.c b/video/out/hwdec/hwdec_aimagereader.c
-index 55883c0be6..90803d4b99 100644
+index 55883c0be6..19c0c0e7bc 100644
 --- a/video/out/hwdec/hwdec_aimagereader.c
 +++ b/video/out/hwdec/hwdec_aimagereader.c
-@@ -20,6 +20,7 @@
+@@ -17,9 +17,12 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "video/out/gpu/shader_cache.h"
++
  #include <assert.h>
  #include <dlfcn.h>
  #include <EGL/egl.h>
@@ -2210,13 +3101,16 @@ index 55883c0be6..90803d4b99 100644
  #include <media/NdkImageReader.h>
  #include <android/native_window_jni.h>
  #include <libavcodec/mediacodec.h>
-@@ -29,12 +30,16 @@
+@@ -29,12 +32,19 @@
  #include "misc/jni.h"
  #include "osdep/threads.h"
  #include "osdep/timer.h"
 +#include "options/options.h"
 +#include "video/out/vo.h"
  #include "video/out/gpu/hwdec.h"
++#if HAVE_EGL_ANDROID
++#include "video/out/opengl/android_gl_trace.h"
++#endif
  #include "video/out/opengl/ra_gl.h"
 +#include "android_yuv_shaders.h"
  
@@ -2229,9 +3123,11 @@ index 55883c0be6..90803d4b99 100644
  
  struct priv_owner {
      struct mp_hwdec_ctx hwctx;
-@@ -52,12 +57,15 @@ struct priv_owner {
+@@ -51,13 +61,17 @@ struct priv_owner {
+     media_status_t (*AImageReader_acquireLatestImage)(AImageReader *, AImage **);
      void (*AImageReader_delete)(AImageReader *);
      media_status_t (*AImage_getHardwareBuffer)(const AImage *, AHardwareBuffer **);
++    media_status_t (*AImage_getCropRect)(const AImage *, AImageCropRect *);
      void (*AImage_delete)(AImage *);
 +    void (*AImage_deleteAsync)(AImage *, int);
      void (*AHardwareBuffer_describe)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
@@ -2245,7 +3141,7 @@ index 55883c0be6..90803d4b99 100644
  
      GLuint gl_texture;
      AImage *image;
-@@ -67,12 +75,26 @@ struct priv {
+@@ -67,12 +81,33 @@ struct priv {
      mp_cond cond;
      bool image_available;
  
@@ -2253,6 +3149,13 @@ index 55883c0be6..90803d4b99 100644
 +    bool native_yuv420;
 +    bool yuv_logged;
 +    bool image_gpu_used;
++    bool crop_sdr;
++    bool crop_unavailable;
++    bool logged_crop_sampling;
++    bool logged_visible_copy;
++    struct ra_tex *oes_tex;
++    struct ra_tex *visible_tex;
++    struct gl_shader_cache *visible_shader;
 +    bool release_sync_logged;
 +    struct mp_image *cached_source;
 +    GLuint yuv_program, yuv_fbo, yuv_vao;
@@ -2272,12 +3175,13 @@ index 55883c0be6..90803d4b99 100644
  };
  
  static const struct { const char *symbol; int offset; } lib_functions[] = {
-@@ -122,9 +144,84 @@ static bool load_lib_functions(struct priv_owner *p, struct mp_log *log)
+@@ -122,9 +157,85 @@ static bool load_lib_functions(struct priv_owner *p, struct mp_log *log)
  
          *(void **) ((uint8_t*)p + lib_functions[i].offset) = fun;
      }
 +    // Optional: older/vendor runtimes can keep working using a completed GL
 +    // copy before release. Do not change ordinary MediaCodec device selection.
++    p->AImage_getCropRect = (void *)dlsym(p->lib_handle, "AImage_getCropRect");
 +    p->AImage_deleteAsync = (void *)dlsym(p->lib_handle, "AImage_deleteAsync");
 +    if (!p->AImage_deleteAsync)
 +        p->AImage_deleteAsync = (void *)dlsym(RTLD_DEFAULT, "AImage_deleteAsync");
@@ -2357,7 +3261,7 @@ index 55883c0be6..90803d4b99 100644
  static int init(struct ra_hwdec *hw)
  {
      struct priv_owner *p = hw->priv;
-@@ -157,8 +254,11 @@ static int init(struct ra_hwdec *hw)
+@@ -157,8 +268,11 @@ static int init(struct ra_hwdec *hw)
      // (incl. ones currently queued) at the same time.
      // The documentation recommends a margin of 2 for acquireLatestImage to
      // work correctly.
@@ -2370,7 +3274,7 @@ index 55883c0be6..90803d4b99 100644
      media_status_t ret = p->AImageReader_newWithUsage(16, 16,
          AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
          max_images, &p->reader);
-@@ -188,6 +288,8 @@ static int init(struct ra_hwdec *hw)
+@@ -188,6 +302,8 @@ static int init(struct ra_hwdec *hw)
          .driver_name = hw->driver->name,
          .av_device_ref = create_mediacodec_device_ref(p->surface),
          .hw_imgfmt = IMGFMT_MEDIACODEC,
@@ -2379,7 +3283,7 @@ index 55883c0be6..90803d4b99 100644
      };
  
      if (!p->hwctx.av_device_ref) {
-@@ -235,10 +337,232 @@ static void image_callback(void *context, AImageReader *reader)
+@@ -235,13 +351,238 @@ static void image_callback(void *context, AImageReader *reader)
      mp_mutex_unlock(&p->lock);
  }
  
@@ -2613,7 +3517,23 @@ index 55883c0be6..90803d4b99 100644
      GL *gl = ra_gl_get(mapper->ra);
  
      p->log = mapper->log;
-@@ -256,25 +580,41 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
++    p->crop_sdr = gl->es >= 300 &&
++                  mapper->src_params.repr.sys != PL_COLOR_SYSTEM_DOLBYVISION &&
++                  !pl_color_transfer_is_hdr(mapper->src_params.color.transfer);
+     mp_mutex_init(&p->lock);
+     mp_cond_init(&p->cond);
+ 
+@@ -251,30 +592,51 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
+         (void *)eglGetProcAddress("eglGetNativeClientBufferANDROID");
+     p->EGLImageTargetTexture2DOES =
+         (void *)eglGetProcAddress("glEGLImageTargetTexture2DOES");
++#if HAVE_EGL_ANDROID
++    if (mapper->owner->ra_ctx->vo->opts->android_gl_trace)
++        p->EGLImageTargetTexture2DOES =
++            android_gl_trace_get_proc_address(NULL, "glEGLImageTargetTexture2DOES");
++#endif
+ 
+     if (!p->CreateImageKHR || !p->DestroyImageKHR ||
          !p->GetNativeClientBufferANDROID || !p->EGLImageTargetTexture2DOES)
          return -1;
  
@@ -2663,21 +3583,119 @@ index 55883c0be6..90803d4b99 100644
      struct ra_tex_params params = {
          .dimensions = 2,
          .w = mapper->src_params.w,
-@@ -296,18 +636,79 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
+@@ -289,44 +651,190 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
+     if (params.format->ctype != RA_CTYPE_UNORM)
+         return -1;
+ 
+-    mapper->tex[0] = ra_create_wrapped_tex(mapper->ra, &params, p->gl_texture);
++    p->oes_tex = ra_create_wrapped_tex(mapper->ra, &params, p->gl_texture);
++    mapper->tex[0] = p->oes_tex;
+     if (!mapper->tex[0])
+         return -1;
+ 
      return 0;
  }
  
+-static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++// Filtering must clamp at the decoded picture edge, not the larger
++// allocator's padded edge. Sample source texel centers into a texture
++// whose bounds match the visible rectangle, then use the normal scaler.
++static bool copy_visible_sdr(struct ra_hwdec_mapper *mapper, AImageCropRect crop)
+ {
+     struct priv *p = mapper->priv;
+-    struct priv_owner *o = mapper->owner->priv;
+     GL *gl = ra_gl_get(mapper->ra);
++    int w = crop.right - crop.left;
++    int h = crop.bottom - crop.top;
++    const struct ra_format *format = NULL;
++    int depth = mapper->src_params.repr.bits.color_depth;
++    if (depth > 0 && depth <= 10)
++        format = ra_find_named_format(mapper->ra, "rgb10_a2");
++    if (!format || !format->renderable || !format->linear_filter)
++        format = ra_find_float16_format(mapper->ra, 4);
++    if (!format || !format->renderable || !format->linear_filter)
++        return false;
++    if (p->visible_tex &&
++        (p->visible_tex->params.w != w || p->visible_tex->params.h != h))
++    {
++        ra_tex_free(mapper->ra, &p->visible_tex);
++    }
++    if (!p->visible_tex) {
++        p->visible_tex = ra_tex_create(mapper->ra, &(struct ra_tex_params) {
++            .dimensions = 2, .w = w, .h = h, .d = 1, .format = format,
++            .render_src = true, .render_dst = true, .src_linear = true,
++        });
++    }
++    if (!p->visible_tex)
++        return false;
++    if (!p->visible_shader) {
++        p->visible_shader = gl_sc_create(mapper->ra, mapper->owner->global, mapper->log);
++        if (gl_check_extension(eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS),
++                               "EGL_ANDROID_native_fence_sync"))
++        {
++            p->CreateSyncKHR = (void *)eglGetProcAddress("eglCreateSyncKHR");
++            p->DestroySyncKHR = (void *)eglGetProcAddress("eglDestroySyncKHR");
++            p->DupNativeFenceFDANDROID = (void *)eglGetProcAddress("eglDupNativeFenceFDANDROID");
++        }
++    }
+ 
+-    o->AImageReader_setImageListener(o->reader, NULL);
+-
+-    gl->DeleteTextures(1, &p->gl_texture);
+-    p->gl_texture = 0;
++    GLint old_external;
++    gl->GetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &old_external);
++    gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, p->gl_texture);
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, old_external);
++
++    struct gl_shader_cache *sc = p->visible_shader;
++    for (const char *const *ext = mapper->owner->glsl_extensions; ext && *ext; ext++)
++        gl_sc_enable_extension(sc, (char *)*ext);
++    gl_sc_uniform_texture(sc, "input_surface", p->oes_tex);
++    gl_sc_uniform_vec2(sc, "crop_origin", (float[]){crop.left, crop.top});
++    gl_sc_uniform_vec2(sc, "buffer_size", (float[]){p->oes_tex->params.w, p->oes_tex->params.h});
++    gl_sc_add(sc, "vec2 uv = (gl_FragCoord.xy + crop_origin) / buffer_size;\n"
++                  "color = vec4(texture(input_surface, uv).rgb, 1.0);\n");
++    static const struct ra_renderpass_input position = {
++        .name = "position", .type = RA_VARTYPE_FLOAT, .dim_v = 2, .dim_m = 1,
++    };
++    float vertices[][2] = {{-1, -1}, {3, -1}, {-1, 3}};
++    p->image_gpu_used = true;
++    gl_sc_dispatch_draw(sc, p->visible_tex, true, &position, 1,
++                        sizeof(vertices[0]), vertices, MP_ARRAY_SIZE(vertices));
+ 
+-    ra_tex_free(mapper->ra, &mapper->tex[0]);
++    gl->GetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &old_external);
++    gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, p->gl_texture);
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    gl->TexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    gl->BindTexture(GL_TEXTURE_EXTERNAL_OES, old_external);
+ 
+-    mp_mutex_destroy(&p->lock);
+-    mp_cond_destroy(&p->cond);
++    if (gl_sc_error_state(sc))
++        return false;
++    mapper->tex[0] = p->visible_tex;
++    if (!p->logged_visible_copy) {
++        MP_VERBOSE(mapper, "Visible rectangle GPU copy active: %dx%d\n", w, h);
++        p->logged_visible_copy = true;
++    }
++    return true;
+ }
+ 
+-static void mapper_unmap(struct ra_hwdec_mapper *mapper)
 +static void release_image(struct ra_hwdec_mapper *mapper)
-+{
-+    struct priv *p = mapper->priv;
+ {
+     struct priv *p = mapper->priv;
+-    struct priv_owner *o = mapper->owner->priv;
 +    struct priv_owner *o = p->reader_owner;
 +    int release_fd = EGL_NO_NATIVE_FENCE_FD_ANDROID;
 +
 +    // DrawArrays only submits the OES -> private-plane copy. AImage_delete
 +    // without a release fence lets the decoder overwrite that input while
-+    // the GPU still reads it, producing spatially torn/shifted blocks. This
-+    // synchronization is limited to the explicit Dolby YUV bridge; ordinary
-+    // retained-OES playback is unchanged.
++    // the GPU still reads it, producing spatially torn/shifted blocks.
 +    if (p->image && p->image_gpu_used) {
 +        GL *gl = ra_gl_get(mapper->ra);
 +        if (o->AImage_deleteAsync && p->CreateSyncKHR && p->DestroySyncKHR &&
@@ -2697,44 +3715,55 @@ index 55883c0be6..90803d4b99 100644
 +        if (release_fd == EGL_NO_NATIVE_FENCE_FD_ANDROID)
 +            gl->Finish(); // Safe fallback, never release an unfinished copy.
 +        if (!p->release_sync_logged) {
-+            MP_INFO(mapper, "Dolby YUV buffer release synchronized using %s.\n",
-+                release_fd >= 0 ? "native GPU fence" : "completed GPU copy");
++            if (p->crop_sdr && p->oes_tex) {
++                MP_VERBOSE(mapper, "Android copied image release synchronized using %s.\n",
++                    release_fd >= 0 ? "native GPU fence" : "completed GPU copy");
++            } else {
++                MP_INFO(mapper, "Dolby YUV buffer release synchronized using %s.\n",
++                    release_fd >= 0 ? "native GPU fence" : "completed GPU copy");
++            }
 +            p->release_sync_logged = true;
 +        }
 +    }
-+
-+    if (p->egl_image) {
-+        p->DestroyImageKHR(eglGetCurrentDisplay(), p->egl_image);
-+        p->egl_image = 0;
-+    }
-+    if (p->image) {
+ 
+     if (p->egl_image) {
+         p->DestroyImageKHR(eglGetCurrentDisplay(), p->egl_image);
+         p->egl_image = 0;
+     }
+-
+     if (p->image) {
+-        o->AImage_delete(p->image);
 +        if (release_fd >= 0)
 +            o->AImage_deleteAsync(p->image, release_fd);
 +        else
 +            o->AImage_delete(p->image);
-+        p->image = NULL;
-+    }
+         p->image = NULL;
+     }
 +    p->image_gpu_used = false;
 +}
 +
- static void mapper_uninit(struct ra_hwdec_mapper *mapper)
- {
-     struct priv *p = mapper->priv;
--    struct priv_owner *o = mapper->owner->priv;
-     GL *gl = ra_gl_get(mapper->ra);
- 
--    o->AImageReader_setImageListener(o->reader, NULL);
++static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++
 +    if (p->reader_owner)
 +        p->reader_owner->AImageReader_setImageListener(p->reader_owner->reader, NULL);
 +
 +    release_image(mapper);
 +    talloc_free(p->cached_source);
 +    av_buffer_unref(&p->stream_device);
- 
-     gl->DeleteTextures(1, &p->gl_texture);
-     p->gl_texture = 0;
- 
--    ra_tex_free(mapper->ra, &mapper->tex[0]);
++
++    gl->DeleteTextures(1, &p->gl_texture);
++    p->gl_texture = 0;
++
++    if (p->oes_tex) {
++        mapper->tex[0] = NULL;
++        ra_tex_free(mapper->ra, &p->oes_tex);
++    }
++    ra_tex_free(mapper->ra, &p->visible_tex);
++    if (p->visible_shader)
++        gl_sc_destroy(p->visible_shader);
 +    for (int i = 0; i < 3; i++)
 +        ra_tex_free(mapper->ra, &mapper->tex[i]);
 +    if (p->yuv_program)
@@ -2743,24 +3772,15 @@ index 55883c0be6..90803d4b99 100644
 +        gl->DeleteFramebuffers(1, &p->yuv_fbo);
 +    if (p->yuv_vao)
 +        gl->DeleteVertexArrays(1, &p->yuv_vao);
- 
-     mp_mutex_destroy(&p->lock);
-     mp_cond_destroy(&p->cond);
-@@ -316,17 +717,11 @@ static void mapper_uninit(struct ra_hwdec_mapper *mapper)
- static void mapper_unmap(struct ra_hwdec_mapper *mapper)
- {
-     struct priv *p = mapper->priv;
--    struct priv_owner *o = mapper->owner->priv;
- 
--    if (p->egl_image) {
--        p->DestroyImageKHR(eglGetCurrentDisplay(), p->egl_image);
--        p->egl_image = 0;
--    }
--
--    if (p->image) {
--        o->AImage_delete(p->image);
--        p->image = NULL;
--    }
++
++    mp_mutex_destroy(&p->lock);
++    mp_cond_destroy(&p->cond);
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
 +    // OES still needs the last valid image when the next Surface frame is late.
 +    // The Dolby Vision bridge has already copied its pixels to private textures.
 +    if (p->dovi_yuv)
@@ -2768,7 +3788,7 @@ index 55883c0be6..90803d4b99 100644
  }
  
  static int mapper_map(struct ra_hwdec_mapper *mapper)
-@@ -335,6 +730,45 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
+@@ -335,6 +843,45 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
      struct priv_owner *o = mapper->owner->priv;
      GL *gl = ra_gl_get(mapper->ra);
  
@@ -2814,7 +3834,7 @@ index 55883c0be6..90803d4b99 100644
      mp_mutex_lock(&p->lock);
      p->image_available = false;
      mp_mutex_unlock(&p->lock);
-@@ -351,7 +785,8 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
+@@ -351,7 +898,8 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
              // HACK: If the buffer has been released already, return fake
              // success to avoid flashing frames of render errors.
              // The VOs need to be fixed to handle this gracefully.
@@ -2824,7 +3844,7 @@ index 55883c0be6..90803d4b99 100644
          }
      }
  
-@@ -365,20 +800,27 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
+@@ -365,20 +913,31 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
      if (!image_available)
          MP_WARN(p, "Waiting for frame timed out!\n");
  
@@ -2850,6 +3870,10 @@ index 55883c0be6..90803d4b99 100644
      }
 -    mp_assert(p->image);
 +    mp_assert(next_image);
++
++    mapper->sample_crop = (struct mp_rect){0};
++    if (p->oes_tex)
++        mapper->tex[0] = p->oes_tex;
  
      AHardwareBuffer *hwbuf = NULL;
 -    ret = o->AImage_getHardwareBuffer(p->image, &hwbuf);
@@ -2861,7 +3885,7 @@ index 55883c0be6..90803d4b99 100644
          return -1;
      }
      mp_assert(hwbuf);
-@@ -386,26 +828,46 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
+@@ -386,26 +945,78 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
      // Update texture size since it may differ
      AHardwareBuffer_Desc d;
      o->AHardwareBuffer_describe(hwbuf, &d);
@@ -2876,6 +3900,8 @@ index 55883c0be6..90803d4b99 100644
      EGLClientBuffer buf = p->GetNativeClientBufferANDROID(hwbuf);
 -    if (!buf)
 +    if (!buf) {
++        MP_ERR(mapper, "eglGetNativeClientBufferANDROID failed: EGL error 0x%04x, buffer=%ux%u stride=%u format=0x%x.\n",
++               (unsigned)eglGetError(), d.width, d.height, d.stride, d.format);
 +        o->AImage_delete(next_image);
          return -1;
 +    }
@@ -2886,6 +3912,8 @@ index 55883c0be6..90803d4b99 100644
          EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, buf, attribs);
 -    if (!p->egl_image)
 +    if (!next_egl_image) {
++        MP_ERR(mapper, "eglCreateImageKHR failed: EGL error 0x%04x, buffer=%ux%u stride=%u format=0x%x.\n",
++               (unsigned)eglGetError(), d.width, d.height, d.stride, d.format);
 +        o->AImage_delete(next_image);
          return -1;
 +    }
@@ -2907,20 +3935,265 @@ index 55883c0be6..90803d4b99 100644
 +        MP_TRACE(mapper, "YUV copy submitted pts=%f\n", mapper->src->pts);
 +    }
 +
++    if (p->crop_sdr && p->oes_tex && o->AImage_getCropRect &&
++        (mapper->can_clamp_crop || !p->crop_unavailable) &&
++        (d.width > mapper->src->w || d.height > mapper->src->h))
++    {
++        AImageCropRect crop;
++        if (o->AImage_getCropRect(next_image, &crop) == AMEDIA_OK &&
++            crop.left >= 0 && crop.top >= 0 &&
++            crop.right > crop.left && crop.bottom > crop.top &&
++            (uint32_t)crop.right <= d.width && (uint32_t)crop.bottom <= d.height &&
++            crop.right - crop.left == mapper->src->w &&
++            crop.bottom - crop.top == mapper->src->h)
++        {
++            if (mapper->can_clamp_crop && mapper->tex[0] == p->oes_tex) {
++                mapper->sample_crop = (struct mp_rect){
++                    crop.left, crop.top, crop.right, crop.bottom,
++                };
++                if (!p->logged_crop_sampling) {
++                    MP_VERBOSE(mapper, "Clamping HW+ sampling to visible rectangle: %dx%d\n",
++                               mapper->src->w, mapper->src->h);
++                    p->logged_crop_sampling = true;
++                }
++            } else if (!p->crop_unavailable && !copy_visible_sdr(mapper, crop)) {
++                MP_WARN(mapper, "Could not crop padded HW+ texture.\n");
++                p->crop_unavailable = true;
++            }
++        }
++    }
++
 +    talloc_free(p->cached_source);
 +    p->cached_source = mp_image_new_ref(mapper->src);
 +
      return 0;
  }
  
+diff --git a/video/out/opengl/android_gl_trace.c b/video/out/opengl/android_gl_trace.c
+new file mode 100644
+index 0000000000..8807ad12cb
+--- /dev/null
++++ b/video/out/opengl/android_gl_trace.c
+@@ -0,0 +1,183 @@
++#include <EGL/egl.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "android_gl_trace.h"
++#include "common/common.h"
++#include "common/msg.h"
++#include "osdep/compiler.h"
++#include "utils.h"
++
++#define TRACED_GL(F) \
++    F(TexImage2D, (GLenum target, GLint level, GLint format, GLsizei w, GLsizei h, \
++                   GLint border, GLenum data_format, GLenum type, const void *pixels), \
++      (target, level, format, w, h, border, data_format, type, pixels), \
++      "target=0x%x level=%d size=%dx%d internal=0x%x format=0x%x type=0x%x", \
++      target, level, w, h, (unsigned)format, data_format, type) \
++    F(TexImage3D, (GLenum target, GLint level, GLint format, GLsizei w, GLsizei h, GLsizei d, \
++                   GLint border, GLenum data_format, GLenum type, const void *pixels), \
++      (target, level, format, w, h, d, border, data_format, type, pixels), \
++      "target=0x%x level=%d size=%dx%dx%d internal=0x%x format=0x%x type=0x%x", \
++      target, level, w, h, d, (unsigned)format, data_format, type) \
++    F(TexStorage2D, (GLenum target, GLsizei levels, GLenum format, GLsizei w, GLsizei h), \
++      (target, levels, format, w, h), "target=0x%x levels=%d size=%dx%d internal=0x%x", \
++      target, levels, w, h, format) \
++    F(TexStorage3D, (GLenum target, GLsizei levels, GLenum format, GLsizei w, GLsizei h, GLsizei d), \
++      (target, levels, format, w, h, d), "target=0x%x levels=%d size=%dx%dx%d internal=0x%x", \
++      target, levels, w, h, d, format) \
++    F(TexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, \
++                      GLenum format, GLenum type, const void *pixels), \
++      (target, level, x, y, w, h, format, type, pixels), \
++      "target=0x%x level=%d offset=%d,%d size=%dx%d format=0x%x type=0x%x", \
++      target, level, x, y, w, h, format, type) \
++    F(FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum tex_target, \
++                             GLuint texture, GLint level), \
++      (target, attachment, tex_target, texture, level), \
++      "target=0x%x attachment=0x%x texture_target=0x%x texture=%u level=%d", \
++      target, attachment, tex_target, texture, level) \
++    F(BlitFramebuffer, (GLint x0, GLint y0, GLint x1, GLint y1, GLint u0, GLint v0, \
++                        GLint u1, GLint v1, GLbitfield mask, GLenum filter), \
++      (x0, y0, x1, y1, u0, v0, u1, v1, mask, filter), \
++      "src=%d,%d:%d,%d dst=%d,%d:%d,%d mask=0x%x filter=0x%x", \
++      x0, y0, x1, y1, u0, v0, u1, v1, mask, filter) \
++    F(BufferData, (GLenum target, intptr_t size, const void *data, GLenum usage), \
++      (target, size, data, usage), "target=0x%x bytes=%jd usage=0x%x", \
++      target, (intmax_t)size, usage) \
++    F(BufferStorage, (GLenum target, intptr_t size, const void *data, GLbitfield flags), \
++      (target, size, data, flags), "target=0x%x bytes=%jd flags=0x%x", \
++      target, (intmax_t)size, flags) \
++    F(BufferStorageEXT, (GLenum target, intptr_t size, const void *data, GLbitfield flags), \
++      (target, size, data, flags), "target=0x%x bytes=%jd flags=0x%x", \
++      target, (intmax_t)size, flags) \
++    F(BufferSubData, (GLenum target, intptr_t offset, intptr_t size, const void *data), \
++      (target, offset, size, data), "target=0x%x offset=%jd bytes=%jd", \
++      target, (intmax_t)offset, (intmax_t)size) \
++    F(Clear, (GLbitfield mask), (mask), "mask=0x%x", mask) \
++    F(DrawArrays, (GLenum mode, GLint first, GLsizei count), (mode, first, count), \
++      "mode=0x%x first=%d count=%d", mode, first, count) \
++    F(DrawElements, (GLenum mode, GLsizei count, GLenum type, const void *indices), \
++      (mode, count, type, indices), "mode=0x%x count=%d index_type=0x%x", mode, count, type) \
++    F(DispatchCompute, (GLuint x, GLuint y, GLuint z), (x, y, z), "groups=%ux%ux%u", x, y, z) \
++    F(EGLImageTargetTexture2DOES, (GLenum target, void *image), (target, image), "target=0x%x", target) \
++    F(Flush, (void), (), "%s", "") \
++    F(Finish, (void), (), "%s", "")
++
++struct android_gl_trace {
++    struct mp_log *log;
++    GLenum (GLAPIENTRY *get_error)(void);
++    // Preserve GL errors for mpv and libplacebo's own glGetError calls.
++    GLenum pending[16];
++    int num_pending;
++#define DECLARE_PROC(name, params, args, fmt, ...) void (GLAPIENTRY *name) params;
++    TRACED_GL(DECLARE_PROC)
++#undef DECLARE_PROC
++};
++
++// Android EGL makes the renderer's context current on its VO thread.
++static thread_local struct android_gl_trace *current;
++
++static void save_error(struct android_gl_trace *trace, GLenum error)
++{
++    for (int i = 0; i < trace->num_pending; i++) {
++        if (trace->pending[i] == error)
++            return;
++    }
++    if (trace->num_pending < MP_ARRAY_SIZE(trace->pending))
++        trace->pending[trace->num_pending++] = error;
++}
++
++static void pending_before(struct android_gl_trace *trace, const char *operation)
++{
++    for (int i = 0; i < MP_ARRAY_SIZE(trace->pending); i++) {
++        GLenum error = trace->get_error();
++        if (error == GL_NO_ERROR)
++            break;
++        save_error(trace, error);
++        mp_err(trace->log, "OpenGL trace: pending %s (0x%04x) before %s.\n",
++               gl_error_to_string(error), error, operation);
++    }
++}
++
++static GLenum GLAPIENTRY trace_GetError(void)
++{
++    struct android_gl_trace *trace = current;
++    if (!trace) {
++        GLenum (GLAPIENTRY *get_error)(void) = (void *)eglGetProcAddress("glGetError");
++        return get_error ? get_error() : GL_NO_ERROR;
++    }
++    if (!trace->num_pending)
++        return trace->get_error();
++
++    GLenum error = trace->pending[0];
++    trace->num_pending--;
++    memmove(trace->pending, trace->pending + 1,
++            trace->num_pending * sizeof(trace->pending[0]));
++    return error;
++}
++
++#define TRACE_PROC(name, params, args, fmt, ...) \
++    static void GLAPIENTRY trace_##name params \
++    { \
++        struct android_gl_trace *trace = current; \
++        if (!trace) { \
++            void (GLAPIENTRY *proc) params = (void *)eglGetProcAddress("gl" #name); \
++            if (proc) \
++                proc args; \
++            return; \
++        } \
++        pending_before(trace, "gl" #name); \
++        trace->name args; \
++        for (int i = 0; i < MP_ARRAY_SIZE(trace->pending); i++) { \
++            GLenum error = trace->get_error(); \
++            if (error == GL_NO_ERROR) \
++                break; \
++            save_error(trace, error); \
++            mp_err(trace->log, "OpenGL trace: gl" #name " reported %s (0x%04x); " fmt "\n", \
++                   gl_error_to_string(error), error, __VA_ARGS__); \
++        } \
++    }
++TRACED_GL(TRACE_PROC)
++#undef TRACE_PROC
++
++struct android_gl_trace *android_gl_trace_create(void *parent, struct mp_log *log)
++{
++    GLenum (GLAPIENTRY *get_error)(void) = (void *)eglGetProcAddress("glGetError");
++    if (!get_error || current) {
++        mp_warn(log, "OpenGL command tracing unavailable in this context.\n");
++        return NULL;
++    }
++
++    current = talloc_zero(parent, struct android_gl_trace);
++    current->log = log;
++    current->get_error = get_error;
++    mp_info(log, "OpenGL command tracing enabled.\n");
++    return current;
++}
++
++void android_gl_trace_destroy(struct android_gl_trace *trace)
++{
++    if (current == trace)
++        current = NULL;
++    talloc_free(trace);
++}
++
++void *android_gl_trace_get_proc_address(void *ctx, const char *name)
++{
++    struct android_gl_trace *trace = ctx ? ctx : current;
++    void *proc = eglGetProcAddress(name);
++    if (!trace || !proc)
++        return proc;
++    if (strcmp(name, "glGetError") == 0)
++        return (void *)trace_GetError;
++
++#define WRAP_PROC(cmd, params, args, fmt, ...) \
++    if (strcmp(name, "gl" #cmd) == 0) { \
++        trace->cmd = proc; \
++        return (void *)trace_##cmd; \
++    }
++    TRACED_GL(WRAP_PROC)
++#undef WRAP_PROC
++
++    return proc;
++}
+diff --git a/video/out/opengl/android_gl_trace.h b/video/out/opengl/android_gl_trace.h
+new file mode 100644
+index 0000000000..d9b4adfa53
+--- /dev/null
++++ b/video/out/opengl/android_gl_trace.h
+@@ -0,0 +1,12 @@
++#ifndef MP_ANDROID_GL_TRACE_H
++#define MP_ANDROID_GL_TRACE_H
++
++struct android_gl_trace;
++struct mp_log;
++
++// The Android EGL renderer owns the trace for the lifetime of its context.
++struct android_gl_trace *android_gl_trace_create(void *parent, struct mp_log *log);
++void android_gl_trace_destroy(struct android_gl_trace *trace);
++void *android_gl_trace_get_proc_address(void *ctx, const char *name);
++
++#endif
 diff --git a/video/out/opengl/context_android.c b/video/out/opengl/context_android.c
-index 0a12cf8add..60cc15dd67 100644
+index 0a12cf8add..08d0d2e92f 100644
 --- a/video/out/opengl/context_android.c
 +++ b/video/out/opengl/context_android.c
-@@ -28,8 +28,47 @@ struct priv {
+@@ -19,6 +19,7 @@
+ #include <EGL/eglext.h>
+ 
+ #include "video/out/android_common.h"
++#include "android_gl_trace.h"
+ #include "egl_helpers.h"
+ #include "common/common.h"
+ #include "context.h"
+@@ -28,18 +29,69 @@ struct priv {
      EGLDisplay egl_display;
      EGLContext egl_context;
      EGLSurface egl_surface;
++    struct android_gl_trace *trace;
++    EGLint last_swap_error;
 +    bool hdr_active;
  };
  
@@ -2965,7 +4238,33 @@ index 0a12cf8add..60cc15dd67 100644
  static void android_swap_buffers(struct ra_ctx *ctx)
  {
      struct priv *p = ctx->priv;
-@@ -65,8 +104,15 @@ static bool android_init(struct ra_ctx *ctx)
+-    eglSwapBuffers(p->egl_display, p->egl_surface);
++    if (eglSwapBuffers(p->egl_display, p->egl_surface)) {
++        p->last_swap_error = EGL_SUCCESS;
++    } else {
++        EGLint error = eglGetError();
++        if (error != p->last_swap_error) {
++            MP_ERR(ctx, "eglSwapBuffers failed: EGL error 0x%04x, surface=%dx%d.\n",
++                   (unsigned)error, ctx->vo->dwidth, ctx->vo->dheight);
++            p->last_swap_error = error;
++        }
++    }
+ }
+ 
+ static void android_uninit(struct ra_ctx *ctx)
+ {
+     struct priv *p = ctx->priv;
+     ra_gl_ctx_uninit(ctx);
++    android_gl_trace_destroy(p->trace);
+ 
+     if (p->egl_surface) {
+         eglMakeCurrent(p->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+@@ -61,12 +113,19 @@ static bool android_init(struct ra_ctx *ctx)
+ 
+     p->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+     if (!eglInitialize(p->egl_display, NULL, NULL)) {
+-        MP_FATAL(ctx, "EGL failed to initialize.\n");
++        MP_FATAL(ctx, "eglInitialize failed: EGL error 0x%04x.\n", (unsigned)eglGetError());
          goto fail;
      }
  
@@ -2982,7 +4281,7 @@ index 0a12cf8add..60cc15dd67 100644
          goto fail;
  
      ANativeWindow *native_window = vo_android_native_window(ctx->vo);
-@@ -74,14 +120,41 @@ static bool android_init(struct ra_ctx *ctx)
+@@ -74,23 +133,59 @@ static bool android_init(struct ra_ctx *ctx)
      eglGetConfigAttrib(p->egl_display, config, EGL_NATIVE_VISUAL_ID, &format);
      ANativeWindow_setBuffersGeometry(native_window, 0, 0, format);
  
@@ -3006,14 +4305,17 @@ index 0a12cf8add..60cc15dd67 100644
 +        (EGLNativeWindowType)native_window, use_hdr ? hdr_attribs : NULL);
 +
 +    if (p->egl_surface == EGL_NO_SURFACE && use_hdr) {
-+        MP_WARN(ctx, "Could not create BT.2020/PQ EGL surface; falling back to SDR.\n");
++        MP_WARN(ctx, "eglCreateWindowSurface failed for BT.2020/PQ: EGL error 0x%04x. Retrying SDR.\n",
++                (unsigned)eglGetError());
 +        p->egl_surface = eglCreateWindowSurface(p->egl_display, config,
 +            (EGLNativeWindowType)native_window, NULL);
 +        use_hdr = false;
 +    }
  
      if (p->egl_surface == EGL_NO_SURFACE) {
-         MP_FATAL(ctx, "Could not create EGL surface!\n");
+-        MP_FATAL(ctx, "Could not create EGL surface!\n");
++        MP_FATAL(ctx, "eglCreateWindowSurface failed: EGL error 0x%04x, color=%d/%d/%d-bit.\n",
++                 (unsigned)eglGetError(), red_size, green_size, blue_size);
          goto fail;
      }
  
@@ -3024,9 +4326,18 @@ index 0a12cf8add..60cc15dd67 100644
 +
      if (!eglMakeCurrent(p->egl_display, p->egl_surface, p->egl_surface,
                          p->egl_context)) {
-         MP_FATAL(ctx, "Failed to set context!\n");
-@@ -91,6 +164,8 @@ static bool android_init(struct ra_ctx *ctx)
-     mpegl_load_functions(&p->gl, ctx->log);
+-        MP_FATAL(ctx, "Failed to set context!\n");
++        MP_FATAL(ctx, "eglMakeCurrent failed: EGL error 0x%04x.\n", (unsigned)eglGetError());
+         goto fail;
+     }
+ 
+-    mpegl_load_functions(&p->gl, ctx->log);
++    if (ctx->vo->opts->android_gl_trace)
++        p->trace = android_gl_trace_create(p, ctx->log);
++    if (p->trace)
++        mpegl_load_functions_cb(&p->gl, ctx->log, android_gl_trace_get_proc_address, p->trace);
++    else
++        mpegl_load_functions(&p->gl, ctx->log);
  
      struct ra_ctx_params params = {
 +        .preferred_csp = android_preferred_csp,
@@ -3034,6 +4345,50 @@ index 0a12cf8add..60cc15dd67 100644
          .swap_buffers = android_swap_buffers,
      };
  
+diff --git a/video/out/opengl/egl_helpers.c b/video/out/opengl/egl_helpers.c
+index 91a6480eb2..2f0697c292 100644
+--- a/video/out/opengl/egl_helpers.c
++++ b/video/out/opengl/egl_helpers.c
+@@ -345,18 +345,24 @@ static int GLAPIENTRY swap_interval(int interval)
+ 
+ // Load gl version and function pointers into *gl.
+ // Expects a current EGL context set.
+-void mpegl_load_functions(struct GL *gl, struct mp_log *log)
++void mpegl_load_functions_cb(struct GL *gl, struct mp_log *log,
++                            void *(*get_proc)(void *, const char *), void *data)
+ {
+     const char *egl_exts = "";
+     EGLDisplay display = eglGetCurrentDisplay();
+     if (display != EGL_NO_DISPLAY)
+         egl_exts = eglQueryString(display, EGL_EXTENSIONS);
+ 
+-    mpgl_load_functions2(gl, mpegl_get_proc_address, NULL, egl_exts, log);
++    mpgl_load_functions2(gl, get_proc, data, egl_exts, log);
+     if (!gl->SwapInterval)
+         gl->SwapInterval = swap_interval;
+ }
+ 
++void mpegl_load_functions(struct GL *gl, struct mp_log *log)
++{
++    mpegl_load_functions_cb(gl, log, mpegl_get_proc_address, NULL);
++}
++
+ static bool is_egl15(void)
+ {
+     // It appears that EGL 1.4 is specified to _require_ an initialized display
+diff --git a/video/out/opengl/egl_helpers.h b/video/out/opengl/egl_helpers.h
+index 32ec5d12e4..02bb255d76 100644
+--- a/video/out/opengl/egl_helpers.h
++++ b/video/out/opengl/egl_helpers.h
+@@ -28,6 +28,8 @@ bool mpegl_create_context_cb(struct ra_ctx *ctx, EGLDisplay display,
+ 
+ struct GL;
+ void mpegl_load_functions(struct GL *gl, struct mp_log *log);
++void mpegl_load_functions_cb(struct GL *gl, struct mp_log *log,
++                            void *(*get_proc)(void *, const char *), void *data);
+ 
+ EGLDisplay mpegl_get_display(EGLenum platform, const char *platform_ext_name,
+                              void *native_display);
 diff --git a/video/out/opengl/formats.c b/video/out/opengl/formats.c
 index 2b4798dbb9..0e558e6a3b 100644
 --- a/video/out/opengl/formats.c
@@ -3081,6 +4436,70 @@ index d252c19f95..c1f7dc5fb4 100644
  
      // Feature flags. They are additional and signal presence of features.
      F_CR        = 1 << 16, // color-renderable
+diff --git a/video/out/opengl/ra_gl.c b/video/out/opengl/ra_gl.c
+index abeff2381f..c772079846 100644
+--- a/video/out/opengl/ra_gl.c
++++ b/video/out/opengl/ra_gl.c
+@@ -364,7 +364,10 @@ static struct ra_tex *gl_tex_create(struct ra *ra,
+ 
+     gl->BindTexture(tex_gl->target, 0);
+ 
+-    gl_check_error(gl, ra->log, "after creating texture");
++    gl_check_error(gl, ra->log, mp_tprintf(144,
++        "texture allocation size=%dx%dx%d format=%s target=0x%x render_target=%d",
++        params->w, params->h, params->d, params->format->name,
++        tex_gl->target, params->render_dst));
+ 
+     // Even blitting needs an FBO in OpenGL for strange reasons.
+     // Download is handled by reading from an FBO.
+@@ -388,8 +391,9 @@ static struct ra_tex *gl_tex_create(struct ra *ra,
+         gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
+ 
+         if (err != GL_FRAMEBUFFER_COMPLETE) {
+-            MP_ERR(ra, "Error: framebuffer completeness check failed (error=%d).\n",
+-                   (int)err);
++            MP_ERR(ra, "glCheckFramebufferStatus returned 0x%04x: framebuffer=%u texture=%u size=%dx%d format=%s.\n",
++                   err, tex_gl->fbo, tex_gl->texture, params->w, params->h,
++                   params->format->name);
+             ra_tex_free(ra, &tex);
+             return NULL;
+         }
+diff --git a/video/out/opengl/utils.c b/video/out/opengl/utils.c
+index 678c12d4ac..6019f365f1 100644
+--- a/video/out/opengl/utils.c
++++ b/video/out/opengl/utils.c
+@@ -32,7 +32,7 @@
+ #include "utils.h"
+ 
+ // GLU has this as gluErrorString (we don't use GLU, as it is legacy-OpenGL)
+-static const char *gl_error_to_string(GLenum error)
++const char *gl_error_to_string(GLenum error)
+ {
+     switch (error) {
+     case GL_INVALID_ENUM: return "INVALID_ENUM";
+@@ -50,8 +50,8 @@ void gl_check_error(GL *gl, struct mp_log *log, const char *info)
+         GLenum error = gl->GetError();
+         if (error == GL_NO_ERROR)
+             break;
+-        mp_msg(log, MSGL_ERR, "%s: OpenGL error %s.\n", info,
+-               gl_error_to_string(error));
++        mp_msg(log, MSGL_ERR, "%s: OpenGL error %s (0x%04x).\n", info,
++               gl_error_to_string(error), error);
+     }
+ }
+ 
+diff --git a/video/out/opengl/utils.h b/video/out/opengl/utils.h
+index 9bcadae91c..e00d6bcd55 100644
+--- a/video/out/opengl/utils.h
++++ b/video/out/opengl/utils.h
+@@ -26,6 +26,7 @@
+ 
+ struct mp_log;
+ 
++const char *gl_error_to_string(GLenum error);
+ void gl_check_error(GL *gl, struct mp_log *log, const char *info);
+ 
+ void gl_upload_tex(GL *gl, GLenum target, GLenum format, GLenum type,
 diff --git a/video/out/vo.c b/video/out/vo.c
 index c90a55cc4c..f09b051b63 100644
 --- a/video/out/vo.c

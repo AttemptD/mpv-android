@@ -6,6 +6,11 @@ cd "$( dirname "${BASH_SOURCE[0]}" )/.."
 . ./include/depinfo.sh
 . ./include/apply-patches.sh
 
+# The cached prefix contains the compiled FFmpeg and libplacebo patches.
+ffmpeg_patch_id=$(git hash-object patches/ffmpeg-upstream-20261109.patch)
+libplacebo_patch_id=$(git hash-object patches/libplacebo-upstream-20261109.patch)
+ci_tarball="${ci_tarball%.tgz}-${v_ffmpeg:0:12}-${ffmpeg_patch_id}-${libplacebo_patch_id}.tgz"
+
 v_ci_archs="armv7l arm64"
 
 msg() {
